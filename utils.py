@@ -22,6 +22,7 @@ class temp(object):
     ME, BOT, U_NAME, B_NAME = None, None, None, None
     CANCEL = False 
     ADMIN_TOKENS, ADMIN_SESSIONS, FILES, PM_FILES = {}, {}, {}, {}
+    USER_SESSIONS, REG_PENDING = {}, {}
 
 # ─────────────────────────────────────────────
 # 🛡️ RATE LIMITER UTILITY (Aggressive RAM Flush Sync)
@@ -210,8 +211,13 @@ def parse_expire_time(e):
         return None
 
 def get_ist_str(dt):
-    # ग्लोबल रिफॉर्मेटेड पठनीय स्ट्रिंग रिपॉजिटरी रेंडरर
-    return (dt + timedelta(hours=5, minutes=30)).strftime("%d %B %Y, %I:%M %p") if dt else "Unknown"
+    if not dt:
+        return "Unknown"
+    # dt already local (naive), just format
+    try:
+        return dt.strftime("%d %B %Y, %I:%M %p")
+    except:
+        return str(dt)
 
 async def safe_del(c, cid, mids):
     try: 

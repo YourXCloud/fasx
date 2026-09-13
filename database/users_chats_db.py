@@ -1,9 +1,11 @@
 import logging
 import hashlib
 import random
+import copy
 from datetime import datetime, timedelta
 import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from info import (DATABASE_URL, DATABASE_NAME, FILE_CAPTION, 
                   SPELL_CHECK, PROTECT_CONTENT, AUTO_DELETE, TIME_ZONE)
 
@@ -28,17 +30,18 @@ class WebAuthDB:
         self.col = db["web_users"] 
         
     async def create_user(self, tg_id, email, password):
-        # कर्सर लोड बचाने के लिए स्ट्रिक्ट प्रोजेक्शन {"_id": 1} लागू
         if await self.col.find_one({"$or": [{"tg_id": tg_id}, {"email": email}]}, {"_id": 1}):
             return False, "Telegram ID or Email already registered!"
-            
         user_data = {
             "tg_id": tg_id,
             "email": email,
             "password": hash_password(password),
-            "joined_date": get_local_now() # सेंट्रलाइज्ड टाइमज़ोन सिंक
+            "joined_date": get_local_now()
         }
-        await self.col.insert_one(user_data)
+        try:
+            await self.col.insert_one(user_data)
+        except DuplicateKeyError:
+            return False, "Telegram ID or Email already registered!"
         return True, "Account Created Successfully!"
 
     async def verify_login(self, email, password):
@@ -189,7 +192,10 @@ class Database:
         await self.groups.update_one({"id": int(gid)}, {"$set": {"settings": st}}, upsert=True)
         
     async def get_settings(self, gid): 
-        return {**self.df_set, **((await self.groups.find_one({"id": int(gid)}, {"settings": 1})) or {}).get("settings", {})}
+        base = copy.deepcopy(self.df_set)
+        db_settings = ((await self.groups.find_one({"id": int(gid)}, {"settings": 1})) or {}).get("settings", {})
+        base.update(db_settings)
+        return base
     
     async def get_warn(self, uid, cid): 
         return await self.warns.find_one({"user_id": uid, "chat_id": cid}, {"count": 1}) or {"count": 0}
@@ -211,7 +217,10 @@ class Database:
 
     # ───────────────── PREMIUM INTEGRITY SYSTEM ─────────────────
     async def get_plan(self, uid): 
-        return {**self.df_prm, **((await self.premium.find_one({"id": int(uid)}, {"status": 1})) or {}).get("status", {})}
+        base = copy.deepcopy(self.df_prm)
+        db_status = ((await self.premium.find_one({"id": int(uid)}, {"status": 1})) or {}).get("status", {})
+        base.update(db_status)
+        return base
         
     async def update_plan(self, uid, data): 
         await self.premium.update_one({"id": int(uid)}, {"$set": {"status": data}}, upsert=True)
@@ -279,13 +288,14 @@ class Database:
             from utils import temp
             ram_users = set()
             
-            # 1. Active Live RAM Sessions से एक्टिव टोकन्स स्कैन करें
             if hasattr(temp, "USER_SESSIONS"):
                 import time
                 now = time.time()
                 for session_id, session_data in temp.USER_SESSIONS.items():
                     if session_data.get("expiry", 0) > now:
-                        ram_users.add(session_data.get("tg_id"))
+                        tid = session_data.get("tg_id")
+                        if tid:
+                            ram_users.add(tid)
 
             # 2. Database `web_users` कलेक्शन से पिछले 24 घंटे की लॉगिन हिस्ट्री चेक करें
             # ✅ BUG FIX: पहले यहाँ naive datetime.now() इस्तेमाल होता था, जबकि
@@ -297,7 +307,9 @@ class Database:
             today_start = get_local_now() - timedelta(days=1)
             db_cursor = self.db["web_users"].find({"last_login": {"$gte": today_start}}, {"tg_id": 1})
             async for user in db_cursor:
-                ram_users.add(user.get("tg_id"))
+                tid = user.get("tg_id")
+                if tid:
+                    ram_users.add(tid)
 
             return len(ram_users)
         except Exception as e:

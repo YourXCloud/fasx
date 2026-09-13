@@ -228,13 +228,20 @@ class Bot(Client):
         logger.info("System Halted Gracefully. All Memory Freed ✅")
 
     async def iter_messages(self, chat_id: Union[int, str], limit: int, offset: int = 0) -> AsyncGenerator["types.Message", None]:
-        current = offset
+        # offset = skip count, message ids start at 1
+        current = max(1, offset) if offset else 1
+        # if offset==0 we start from 1, if offset=1000 we start from 1000
+        if offset == 0:
+            current = 1
         while current < limit:
-            diff = min(200, limit - current)
+            diff = min(200, limit - current + 1)
             try:
-                messages = await self.get_messages(chat_id, list(range(current, current + diff)))
+                ids = [i for i in range(current, current + diff) if i > 0]
+                if not ids:
+                    break
+                messages = await self.get_messages(chat_id, ids)
                 for message in messages:
-                    if message and not message.empty: 
+                    if message and not getattr(message, 'empty', False):
                         yield message
                 current += diff
             except Exception as e:

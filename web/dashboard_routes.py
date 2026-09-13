@@ -77,6 +77,7 @@ var curQ='',curOff=0,nextOff='',curCol='all',curPage=1;
 var searchReqId=0;
 var pMode=localStorage.getItem('posterMode')||'tg';
 var LIMIT_VAL = __LIMIT_PLACEHOLDER__;
+function escH(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
 function closeCdds(){
     document.getElementById('cddColMenu').style.display='none';
@@ -231,7 +232,7 @@ async function doSearch(o,allowEmpty){
                 posterHtml+
                 textInfo+
                 '<div class="fc-body">'+
-                    '<div class="fc-name" id="name-title-'+f.file_id+'" onclick="window.open(\\''+f.watch+'\\',\\'_blank\\')">'+f.name+'</div>'+
+                    '<div class="fc-name" id="name-title-'+f.file_id+'" onclick="window.open(\\''+f.watch+'\\',\\'_blank\\')">'+escH(f.name)+'</div>'+
                 '</div>'+
             '</div>';
         });
@@ -386,7 +387,4 @@ async def premium_expired(req):
     return build_page("Premium Expired", form_wrapper("Premium Expired", content), "login-bg")
 
 
-# ✅ OPTIMIZATION 2: Koyeb Health Check Route
-@dashboard_routes.get('/health')
-async def koyeb_health_check(req):
-    return web.json_response({"status": "alive", "platform": "koyeb"})
+# health route removed - central health in bot.py

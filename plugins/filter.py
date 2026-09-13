@@ -110,11 +110,8 @@ async def get_google_spell_suggestions(query, limit=5):
     """
     try:
         session = await get_http_session()
-        # ✅ FIX: query को ठीक से URL-encode किया — पहले raw string (spaces/Hindi
-        # characters सहित) सीधे URL में डाला जा रहा था, जो multi-word/Hindi movie
-        # नामों पर request को तोड़ देता था।
         params = {"client": "firefox", "q": f"{query} movie"}
-        async with session.get("http://suggestqueries.google.com/complete/search", params=params) as resp:
+        async with session.get("https://suggestqueries.google.com/complete/search", params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
             # ✅ FIX: Google का यह endpoint Content-Type: application/json नहीं
             # भेजता (application/x-suggestions+json जैसा कुछ भेजता है) — aiohttp
             # का resp.json() डिफ़ॉल्ट में इसे ContentTypeError मानकर फेंक देता था,
@@ -144,8 +141,9 @@ async def get_google_spell_suggestions(query, limit=5):
 # 🎨 UI HELPER FUNCTION (Minimalist Layout Lock)
 # ─────────────────────────────────────────────
 def get_filter_ui(search, files, total, act_src, offset, chat_id, req_id, key, next_off, simple_mode=True, delay=300):
+    import html as _html
     list_items = [
-        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>[{get_size(f['file_size'])}] {f['file_name']}</a>"
+        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>[{get_size(f['file_size'])}] {_html.escape(str(f['file_name'])[:90])}</a>"
         for f in files
     ]
     files_text = "\n\n".join(list_items)
@@ -362,13 +360,19 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
 
     key = f"{msg.chat.id}-{msg.id}"
     temp.FILES[key] = files
-    BUTTONS[key] = {"query": search, "counts": {collection_type: counts_out}}
+    # counts_out = {"primary":x,"cloud":y,"archive":z} for all, flat dict for fast reuse
+    BUTTONS[key] = {"query": search, "counts": counts_out}
 
     cap, markup = get_filter_ui(search, files, total, act_src, 0, msg.chat.id, msg.from_user.id, key, next_offset, is_simple_mode, delay=300)
 
     try:
         res = await msg.reply(cap, reply_markup=markup, disable_web_page_preview=True, quote=True)
-        asyncio.create_task(start_auto_delete_timer(client, res.chat.id, res.id, delay=300))
+        # fast in-memory timer + persistent DB backup for restart-proof
+        asyncio.create_task(start_auto_delete_timer(client, res.chat.id, res.id, delay=DELETE_TIME))
+        try:
+            await db.add_to_delete_queue(res.chat.id, res.id, DELETE_TIME)
+        except:
+            pass
     except Exception as e: 
         logger.error(f"Auto filter response error: {e}")
 
@@ -378,25 +382,50 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
 @Client.on_callback_query(filters.regex(r"^close_"))
 async def close_callback(client, query):
     try:
+        parts = query.data.split("_")
+        if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) != query.from_user.id:
+            return await query.answer("❌ You cannot close this result!", show_alert=True)
+
         chat_id = query.message.chat.id
         current_msg_id = query.message.id
         
         task_key = f"{chat_id}_{current_msg_id}"
         if task_key in ACTIVE_DELETE_TASKS:
-            ACTIVE_DELETE_TASKS[task_key].cancel()
+            try:
+                ACTIVE_DELETE_TASKS[task_key].cancel()
+            except:
+                pass
             ACTIVE_DELETE_TASKS.pop(task_key, None)
 
-        # ✅ BUG FIX: अंधे की तरह -1/+1 डिलीट करने के बजाय सिर्फ बोट रिस्पांस और मूल यूज़र क्वेरी को ही डिलीट करें
         msg_ids_to_clean = [current_msg_id]
         if query.message.reply_to_message:
             msg_ids_to_clean.append(query.message.reply_to_message.id)
         elif getattr(query.message, "reply_to_message_id", None):
             msg_ids_to_clean.append(query.message.reply_to_message_id)
+
+        # PM_FILES cleanup (merged from commands.py)
+        if hasattr(temp, 'PM_FILES'):
+            target_key = None
+            for k, v in list(temp.PM_FILES.items()):
+                if v.get('file_msg') == current_msg_id or k == current_msg_id:
+                    if v.get('note_msg'):
+                        msg_ids_to_clean.append(v.get('note_msg'))
+                    target_key = k
+                    break
+            if target_key:
+                try:
+                    del temp.PM_FILES[target_key]
+                except:
+                    pass
         
         for mid in msg_ids_to_clean:
-            await db.remove_from_delete_queue(chat_id, mid)
+            if mid:
+                try:
+                    await db.remove_from_delete_queue(chat_id, mid)
+                except:
+                    pass
             
-        await client.delete_messages(chat_id, msg_ids_to_clean)
+        await client.delete_messages(chat_id, [m for m in msg_ids_to_clean if m])
     except Exception:
         try: await query.message.delete()
         except: pass
@@ -426,7 +455,7 @@ async def spell_check_handler(client, query):
             
         key = f"{query.message.chat.id}-{query.message.id}"
         temp.FILES[key] = files
-        BUTTONS[key] = {"query": suggestion, "counts": {"all": counts_out}}
+        BUTTONS[key] = {"query": suggestion, "counts": counts_out}
         
         settings = await get_settings(query.message.chat.id)
         is_simple_mode = settings.get("simple_mode", True)
@@ -435,6 +464,10 @@ async def spell_check_handler(client, query):
         await query.message.edit_text(cap, reply_markup=markup, disable_web_page_preview=True)
         
         asyncio.create_task(start_auto_delete_timer(client, query.message.chat.id, query.message.id, delay=300))
+        try:
+            await db.add_to_delete_queue(query.message.chat.id, query.message.id, DELETE_TIME)
+        except:
+            pass
             
     except Exception as e:
         logger.error(f"Spellcheck Callback Error: {e}")
@@ -464,15 +497,14 @@ async def pagination_handler(client, query):
     offset, coll_short = (int(data[3]), data[4]) if action == "nav" else (0, data[3])
     coll_type = SHORT_TO_SRC.get(coll_short, "all")
 
-    # ⚡ Isi tab ke liye count pehle se cached hai to dobara count_documents na chale (fast pagination)
-    cached = entry["counts"].get(coll_type)
+    # ✅ FIX: cached dict now flat {primary,cloud,archive} -> reuse for all
     counts_out = {}
     files, next_off, total, act_src = await get_search_results(
         search, MAX_BOT_RESULTS, offset, collection_type=coll_type,
-        cached_counts=cached, counts_out=counts_out
+        cached_counts=entry["counts"], counts_out=counts_out
     )
     if counts_out:
-        entry["counts"][coll_type] = counts_out
+        entry["counts"].update(counts_out)
     
     if not files:
         err = "❌ No more pages!" if action == "nav" else f"❌ No files in {coll_type.upper()}"

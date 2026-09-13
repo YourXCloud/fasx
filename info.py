@@ -167,8 +167,15 @@ UPI_ID = environ.get("UPI_ID", "").strip()
 UPI_NAME = environ.get("UPI_NAME", "").strip()
 
 RECEIPT_SEND_USERNAME = environ.get("RECEIPT_SEND_USERNAME", "").strip()
-if RECEIPT_SEND_USERNAME and not RECEIPT_SEND_USERNAME.startswith("@") and not RECEIPT_SEND_USERNAME.isnumeric():
-    RECEIPT_SEND_USERNAME = "@" + RECEIPT_SEND_USERNAME
+if RECEIPT_SEND_USERNAME:
+    # numeric id -> int, username -> ensure @
+    if RECEIPT_SEND_USERNAME.replace("-", "").isnumeric():
+        try:
+            RECEIPT_SEND_USERNAME = int(RECEIPT_SEND_USERNAME)
+        except:
+            pass
+    elif not RECEIPT_SEND_USERNAME.startswith("@"):
+        RECEIPT_SEND_USERNAME = "@" + RECEIPT_SEND_USERNAME
 
 if not UPI_ID or not UPI_NAME:
     logger.warning("⚠️ UPI_ID or UPI_NAME is missing. Payment flow might get interrupted.")

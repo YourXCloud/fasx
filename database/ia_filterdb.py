@@ -299,10 +299,14 @@ async def get_search_results(query, max_results, offset=0, lang=None, collection
 
     else:
         col = COLLECTIONS.get(collection_type, primary)
-        results, total = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=bypass_count)
+        # ✅ FIX: single collection ke liye bhi cached count reuse (fast pagination)
+        if cached_counts and collection_type in cached_counts and not bypass_count:
+            results, _ = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=True)
+            total = cached_counts[collection_type]
+        else:
+            results, total = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=bypass_count)
         actual_src = collection_type.capitalize()
         if not results: total = 0
-        # ✅ FIX: single-collection टैब (primary/cloud/archive) के लिए भी counts_out भरो
         if counts_out is not None:
             counts_out[collection_type] = total
 
@@ -499,10 +503,10 @@ async def delete_files(query, collection_type="all"):
         flt = {"file_name": regex}
 
         for col in cols:
-            # ✅ /delete (regex मैच वाला targeted delete) — DB से हटाने से पहले
-            # हर matching फाइल का बैकअप DELETE_CHANNEL में भेजा जाता है
+            # ✅ FIX: backup ke beech thoda gap taaki flood na ho
             async for doc in col.find(flt, {"_id": 1, "file_name": 1, "file_ref": 1}):
                 await _backup_before_delete(doc)
+                await asyncio.sleep(0.35)
             res = await col.delete_many(flt)
             deleted += res.deleted_count
         return deleted
@@ -618,15 +622,17 @@ async def delete_actor_profile(actor_id):
         return False
 
 async def delete_gallery_image_by_index(actor_id, index: int):
-    """गैलरी एरे में से स्पेसिफिक इंडेक्स वाली इमेज को पुल (हटा) करता है।"""
+    """गैलरी एरे में से स्पेसिफिक इंडेक्स वाली इमेज को हटाता है (index-safe, $pull nahi)."""
     try:
-        doc = await actors.find_one({"_id": ObjectId(actor_id)})
-        if not doc or "gallery" not in doc: return False
+        doc = await actors.find_one({"_id": ObjectId(actor_id)}, {"gallery": 1})
+        if not doc or "gallery" not in doc:
+            return False
         gallery = doc["gallery"]
-        if index < 0 or index >= len(gallery): return False
-        target_tg_id = gallery[index]
-        res = await actors.update_one({"_id": ObjectId(actor_id)}, {"$pull": {"gallery": target_tg_id}})
-        return bool(res.modified_count)
+        if index < 0 or index >= len(gallery):
+            return False
+        gallery.pop(index)
+        res = await actors.update_one({"_id": ObjectId(actor_id)}, {"$set": {"gallery": gallery}})
+        return bool(res.modified_count or res.matched_count)
     except Exception as e:
         logger.error(f"delete_gallery_image error: {e}")
         return False

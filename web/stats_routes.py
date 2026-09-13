@@ -139,7 +139,7 @@ async def stats(req):
         tot_dir = await actors.count_documents({})
         app_dir = await actors.count_documents({"category": "app"})
         web_dir = await actors.count_documents({"category": "website"})
-        act_dir = tot_dir - app_dir - web_dir
+        act_dir = await actors.count_documents({"category": "actor"})
     except:
         tot_dir = app_dir = web_dir = act_dir = 0
 
