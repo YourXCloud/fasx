@@ -85,7 +85,7 @@ async def get_http_session():
         _http_session = aiohttp.ClientSession()
     return _http_session
 
-async def get_spell_suggestions(query, limit=6):
+async def get_spell_suggestions(query, limit=6, collection_type="all"):
     """
     ✅ UPGRADED: DB se hi suggestion aaye, jo file DB me actually hai.
     - Pehle apne catalog (file_name text index + prefix fallback) se 5 tak nikalo — ye 100% existing titles hote hain.
@@ -93,8 +93,8 @@ async def get_spell_suggestions(query, limit=6):
     - Google ka result agar DB me exist nahi karta, to discard — taaki "Still no results" wala case kabhi na aaye.
     - Google Suggest https + 5s timeout ke saath safe hai.
     """
-    # 1. DB suggestions - guaranteed existing
-    db_sugs = await get_db_spell_suggestions(query, limit=limit)
+    # 1. DB suggestions - guaranteed existing from Primary/Cloud/Archive
+    db_sugs = await get_db_spell_suggestions(query, limit=limit, collection_type=collection_type)
     seen = {s.lower().strip() for s in db_sugs}
     orig_lower = query.lower().strip()
     seen.add(orig_lower)
@@ -112,7 +112,7 @@ async def get_spell_suggestions(query, limit=6):
                 continue
             # ✅ Validate: Google suggestion ka koi file DB me hai kya? bypass_count=True fast check
             try:
-                files, _, _, _ = await get_search_results(g, 1, 0, collection_type="all", bypass_count=True)
+                files, _, _, _ = await get_search_results(g, 1, 0, collection_type=collection_type, bypass_count=True)
                 if files:
                     db_sugs.append(g)
                     seen.add(gl)
@@ -120,7 +120,7 @@ async def get_spell_suggestions(query, limit=6):
                 # check fail hua to bhi Google suggestion ko DB spell se double-check
                 try:
                     # agar is Google term ke liye DB spell kuch de de, to matlab close match DB me hai
-                    alt = await get_db_spell_suggestions(g, limit=1)
+                    alt = await get_db_spell_suggestions(g, limit=1, collection_type=collection_type)
                     if alt:
                         db_sugs.append(alt[0])
                         seen.add(alt[0].lower().strip())
@@ -353,7 +353,7 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
             # ✅ FIX: पहले सिर्फ़ 1 suggestion मिलता था, अब Google Suggest से मिले
             # सारे (5 तक) suggestions एक-एक बटन के रूप में दिखाए जाते हैं ताकि
             # सही टाइटल चुनने का ज़्यादा मौका मिले।
-            suggestions = await get_spell_suggestions(search, limit=6)
+            suggestions = await get_spell_suggestions(search, limit=6, collection_type=collection_type)
             if suggestions:
                 try:
                     m = await msg.reply("🤔 Checking spelling...", quote=True)

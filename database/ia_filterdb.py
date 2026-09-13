@@ -342,11 +342,15 @@ async def get_db_spell_suggestions(query, limit=6, collection_type="all"):
     q = str(query or "").strip()
     if not q: return []
 
-    cols = [primary, cloud, archive] if collection_type == "all" else [COLLECTIONS.get(collection_type, primary)]
+    cols_map = {"primary": primary, "cloud": cloud, "archive": archive}
+    if collection_type == "all":
+        cols = [primary, cloud, archive]
+    else:
+        cols = [cols_map.get(collection_type, primary)]
+
     seen = {q.lower().strip()}
     suggestions = []
 
-    # helper to add titles from docs
     def _add_from_docs(docs):
         for doc in docs:
             if len(suggestions) >= limit:
@@ -358,78 +362,87 @@ async def get_db_spell_suggestions(query, limit=6, collection_type="all"):
             seen.add(key)
             suggestions.append(title)
 
-    # 1️⃣ $text search - OR style, closest match
+    # 1️⃣ Balanced $text search - har collection se 2-3 lao taaki Primary/Cloud/Archive teeno se aaye
     try:
-        tasks = [
-            col.find(
-                {"$text": {"$search": q}},
-                {"file_name": 1, "score": {"$meta": "textScore"}}
-            ).sort([("score", {"$meta": "textScore"})]).limit(20).to_list(length=20)
-            for col in cols
-        ]
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-        candidates = []
-        for res in results_lists:
-            if isinstance(res, Exception):
+        per_col = max(2, (limit // len(cols)) + 1)
+        for col in cols:
+            if len(suggestions) >= limit:
+                break
+            try:
+                cur = col.find(
+                    {"$text": {"$search": q}},
+                    {"file_name": 1, "score": {"$meta": "textScore"}}
+                ).sort([("score", {"$meta": "textScore"})]).limit(20)
+                docs = await cur.to_list(length=20)
+                docs.sort(key=lambda d: d.get("score", 0), reverse=True)
+                _add_from_docs(docs[:per_col])
+            except Exception:
                 continue
-            candidates.extend(res)
-        candidates.sort(key=lambda d: d.get("score", 0), reverse=True)
-        _add_from_docs(candidates)
+        if len(suggestions) < limit:
+            tasks = [
+                col.find(
+                    {"$text": {"$search": q}},
+                    {"file_name": 1, "score": {"$meta": "textScore"}}
+                ).sort([("score", {"$meta": "textScore"})]).limit(20).to_list(length=20)
+                for col in cols
+            ]
+            results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+            candidates = []
+            for res in results_lists:
+                if isinstance(res, Exception):
+                    continue
+                candidates.extend(res)
+            candidates.sort(key=lambda d: d.get("score", 0), reverse=True)
+            _add_from_docs(candidates)
     except Exception as e:
         logger.debug(f"DB spell text-search failed: {e}")
 
-    # 2️⃣ Prefix fallback - first 3 chars, always try to fill up to limit
+    # 2️⃣ Prefix fallback - har collection se
     if len(suggestions) < limit and len(q) >= 2:
         try:
             pref = re.escape(q[:3] if len(q) >= 3 else q[:2])
             prefix_regex = re.compile(r'(\b|[\s.\-_])' + pref, re.IGNORECASE)
-            tasks = [
-                col.find({"file_name": prefix_regex}, {"file_name": 1}).limit(20).to_list(length=20)
-                for col in cols
-            ]
-            prefix_results = await asyncio.gather(*tasks, return_exceptions=True)
-            pc = []
-            for res in prefix_results:
-                if isinstance(res, Exception):
-                    continue
-                pc.extend(res)
-            # random shuffle nahi, bas as-is
-            _add_from_docs(pc)
-        except Exception as e:
-            logger.debug(f"DB spell prefix fallback failed: {e}")
-
-    # 3️⃣ Word-level regex - query ke har word se alag search, taaki kam se kam koi word match ho
-    if len(suggestions) < limit:
-        words = [w for w in re.split(r'\s+', q) if len(w) >= 2]
-        for w in words[:3]:  # max 3 words try
-            if len(suggestions) >= limit:
-                break
-            try:
-                w_regex = re.compile(re.escape(w), re.IGNORECASE)
-                tasks = [
-                    col.find({"file_name": w_regex}, {"file_name": 1}).limit(15).to_list(length=15)
-                    for col in cols
-                ]
-                w_results = await asyncio.gather(*tasks, return_exceptions=True)
-                wc = []
-                for res in w_results:
-                    if isinstance(res, Exception):
-                        continue
-                    wc.extend(res)
-                _add_from_docs(wc)
-            except Exception:
-                continue
-
-    # 4️⃣ Last resort - recent files se bhar do taaki hamesha 5-6 suggestions DB se milen, search kabhi fail na ho
-    if len(suggestions) < limit:
-        try:
-            # recent files se 10 lao, jo already DB me hain
             for col in cols:
                 if len(suggestions) >= limit:
                     break
                 try:
-                    cursor = col.find({}, {"file_name": 1}).sort([('added_on', -1)]).limit(10)
-                    docs = await cursor.to_list(length=10)
+                    cur = col.find({"file_name": prefix_regex}, {"file_name": 1}).limit(20)
+                    docs = await cur.to_list(length=20)
+                    _add_from_docs(docs)
+                except:
+                    continue
+        except Exception as e:
+            logger.debug(f"DB spell prefix fallback failed: {e}")
+
+    # 3️⃣ Word-level regex - har word se har collection me
+    if len(suggestions) < limit:
+        words = [w for w in re.split(r'\s+', q) if len(w) >= 2]
+        for w in words[:3]:
+            if len(suggestions) >= limit:
+                break
+            try:
+                w_regex = re.compile(re.escape(w), re.IGNORECASE)
+                for col in cols:
+                    if len(suggestions) >= limit:
+                        break
+                    try:
+                        cur = col.find({"file_name": w_regex}, {"file_name": 1}).limit(15)
+                        docs = await cur.to_list(length=15)
+                        _add_from_docs(docs)
+                    except:
+                        continue
+            except Exception:
+                continue
+
+    # 4️⃣ Recent fallback - har collection se recent, teeno se guarantee
+    if len(suggestions) < limit:
+        try:
+            for col in cols:
+                if len(suggestions) >= limit:
+                    break
+                try:
+                    cur = col.find({}, {"file_name": 1}).sort([('added_on', -1)]).limit(10)
+                    docs = await cur.to_list(length=10)
                     _add_from_docs(docs)
                 except:
                     continue
@@ -437,12 +450,6 @@ async def get_db_spell_suggestions(query, limit=6, collection_type="all"):
             logger.debug(f"DB spell recent fallback failed: {e}")
 
     return suggestions[:limit]
-
-
-# ─────────────────────────────────────────────────────────
-# 🆕 RECENT FILES (कोई query ना हो तब dashboard पर दिखाने के लिए
-# — सबसे नई अपलोड की गई फाइलें, ताकि पेज खाली ना लगे)
-# ─────────────────────────────────────────────────────────
 async def get_recent_files(max_results, offset=0, collection_type="all"):
     proj = {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1, "added_on": 1}
 
