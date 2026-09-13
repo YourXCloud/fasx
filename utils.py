@@ -170,6 +170,33 @@ def get_readable_time(seconds):
             res += f"{int(val)}{name} "
     return res.strip() or "0s"
 
+def get_duration(seconds):
+    """मीडिया की लंबाई (seconds) को वीडियो-स्टाइल टाइमकोड में बदलता है —
+    1h+ के लिए '1:23:45', वरना '23:45'। Telegram के Video/Audio ऑब्जेक्ट से
+    मिला `duration` int होता है; पुराने/नॉन-मीडिया डॉक्युमेंट्स में यह फील्ड
+    मौजूद ही नहीं होती, इसलिए गलत/खाली/नेगेटिव इनपुट पर '' लौटता है
+    (ताकि UI में '0:00' जैसा बेकार टेक्स्ट न छपे)।"""
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return ""
+    if seconds <= 0:
+        return ""
+    hours, rem = divmod(seconds, 3600)
+    mins, secs = divmod(rem, 60)
+    return f"{hours}:{mins:02d}:{secs:02d}" if hours else f"{mins}:{secs:02d}"
+
+def get_media_meta(file_doc, sep=" • "):
+    """DB डॉक्युमेंट (या किसी भी dict) से size + duration का तैयार डिस्प्ले
+    टेक्स्ट बनाता है — जैसे '1.20 GB • 2:14:09'। duration न हो तो सिर्फ़ size।
+    एक ही जगह लिखा गया है ताकि Telegram बटन-लिस्ट, कैप्शन टेम्पलेट और web
+    कार्ड्स सब जगह एक जैसा फॉर्मेट दिखे (डुप्लिकेशन नहीं)।"""
+    if not isinstance(file_doc, dict):
+        file_doc = {}
+    size = get_size(file_doc.get("file_size", 0) or 0)
+    dur = get_duration(file_doc.get("duration"))
+    return f"{size}{sep}{dur}" if dur else size
+
 def get_wish():
     # ✅ FIX: कचरा टेक्स्ट और अशुद्धियों को हटाकर कस्टमाइज्ड टाइमज़ोन विश इंजन सिंक किया गया
     tz = pytz.timezone(TIME_ZONE)

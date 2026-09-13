@@ -94,7 +94,7 @@ POST_WIZARD_JS = '''
             let html = '';
             (data.results || []).forEach(f => {
                 const safeName = f.name.replace(/'/g, "\\\\'").replace(/"/g, "&quot;");
-                html += `<div style="padding:12px 15px; border-bottom:1px solid var(--border); cursor:pointer;" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='transparent'" onclick="addVideoToPost('${f.file_id}', '${safeName}')"><div style="font-weight:700; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${f.name}</div><div style="font-size:11px; color:var(--muted); margin-top:4px;">${f.size}</div></div>`;
+                html += `<div style="padding:12px 15px; border-bottom:1px solid var(--border); cursor:pointer;" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='transparent'" onclick="addVideoToPost('${f.file_id}', '${safeName}')"><div style="font-weight:700; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${f.name}</div><div style="font-size:11px; color:var(--muted); margin-top:4px;">${f.size}${f.duration?' &middot; &#9201; '+f.duration:''}</div></div>`;
             });
             if(loadMore) { resDiv.insertAdjacentHTML('beforeend', html); } else { resDiv.innerHTML = html; }
             videoSearchOffset = data.next_offset || '';

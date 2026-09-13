@@ -56,6 +56,7 @@ CSS = """
 .poster-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:5px;padding:8px;z-index:3}
 .type-chip{background:rgba(0,0,0,.72);backdrop-filter:blur(8px);color:#fff;border-radius:5px;padding:3px 8px;font-size:10px;font-weight:800;letter-spacing:.8px;border:1px solid rgba(255,255,255,.14);line-height:1.4}
 .size-chip{background:rgba(0,0,0,.60);backdrop-filter:blur(8px);color:#e0e0e0;border-radius:5px;padding:3px 8px;font-size:10px;font-weight:600;border:1px solid rgba(255,255,255,.08);line-height:1.4}
+.dur-chip{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.78);backdrop-filter:blur(8px);color:#fff;border-radius:5px;padding:2px 7px;font-size:10px;font-weight:700;letter-spacing:.4px;border:1px solid rgba(255,255,255,.14);line-height:1.4;z-index:3;font-variant-numeric:tabular-nums}
 .source-pill{margin-left:auto;border-radius:20px;padding:3px 8px;font-size:9px;font-weight:700;letter-spacing:.4px;display:inline-flex;align-items:center;gap:4px;backdrop-filter:blur(8px)}
 .source-pill.primary{background:#14532d;color:#4ade80;border:1px solid #22c55e}
 .source-pill.cloud{background:#1e3a5f;color:#93c5fd;border:1px solid #60a5fa}
@@ -72,6 +73,7 @@ CSS = """
 .fc-text-info{display:flex;align-items:center;gap:6px;padding:10px 11px 0;flex-wrap:wrap;margin-bottom:4px}
 .tc-type{background:var(--bg4);color:var(--muted);border-radius:5px;padding:2px 7px;font-size:9px;font-weight:800;letter-spacing:.8px;border:1px solid var(--border)}
 .tc-size{color:var(--muted);font-size:11px}
+.tc-dur{background:var(--bg4);color:var(--muted);border-radius:5px;padding:2px 7px;font-size:9px;font-weight:700;border:1px solid var(--border);font-variant-numeric:tabular-nums}
 
 .spin-wrap{display:flex;flex-direction:column;align-items:center;gap:16px;padding:60px 20px;color:var(--muted);grid-column:1/-1}
 .spinner{width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}

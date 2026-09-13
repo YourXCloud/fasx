@@ -10,7 +10,7 @@ from hydrogram import Client, filters, enums
 from hydrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from info import ADMINS, DELETE_TIME, MAX_BOT_RESULTS, IS_PREMIUM, PICS, SPELL_CHECK
-from utils import is_premium, get_size, is_check_admin, temp, get_settings, save_group_settings
+from utils import is_premium, get_media_meta, is_check_admin, temp, get_settings, save_group_settings
 from database.ia_filterdb import get_search_results, get_db_spell_suggestions
 from database.users_chats_db import db
 from Script import script  
@@ -174,8 +174,12 @@ async def get_google_spell_suggestions(query, limit=6):
 # ─────────────────────────────────────────────
 def get_filter_ui(search, files, total, act_src, offset, chat_id, req_id, key, next_off, simple_mode=True, delay=300):
     import html as _html
+    # 🎞️ हर रिज़ल्ट लाइन में size के साथ video duration भी दिखता है
+    # (जैसे "[1.20 GB ⏱ 2:14:09]") — duration DB में न हो (पुरानी/नॉन-वीडियो
+    # फाइल) तो सिर्फ़ size छपता है, फॉर्मेट util में ही सेंट्रलाइज़्ड है।
     list_items = [
-        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>[{get_size(f['file_size'])}] {_html.escape(str(f['file_name'])[:90])}</a>"
+        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>"
+        f"[{get_media_meta(f, ' ⏱ ')}] {_html.escape(str(f['file_name'])[:90])}</a>"
         for f in files
     ]
     files_text = "\n\n".join(list_items)

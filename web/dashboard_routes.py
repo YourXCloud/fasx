@@ -209,6 +209,7 @@ async function doSearch(o,allowEmpty){
                         '<span class="size-chip">'+f.size+'</span>'+
                         '<span class="source-pill '+sc+'"><span class="source-dot"></span>'+sc.toUpperCase()+'</span>'+
                     '</div>'+
+                    (f.duration?'<span class="dur-chip">&#9201; '+f.duration+'</span>':'')+
                     adminBtns+
                 '</div>';
             }
@@ -218,6 +219,7 @@ async function doSearch(o,allowEmpty){
                 textInfo='<div class="fc-text-info" onclick="toggleAdminBtns(this.closest(\\'.file-card\\'),event)">'+
                     '<span class="tc-type">'+f.type.toUpperCase()+'</span>'+
                     '<span class="tc-size">'+f.size+'</span>'+
+                    (f.duration?'<span class="tc-dur">&#9201; '+f.duration+'</span>':'')+
                     '<span class="source-pill '+sc+'" style="margin-left:auto"><span class="source-dot"></span>'+sc.toUpperCase()+'</span>'+
                 '</div>';
                 if(d.is_admin){

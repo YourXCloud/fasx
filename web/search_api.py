@@ -14,11 +14,11 @@ from lru import LRU
 from aiohttp import web
 
 # कस्टमाइज्ड कोर यूटिल्स और कन्फर्म कंट्रोल्स इम्पोर्ट्स
-from utils import temp, get_size, is_premium
+from utils import temp, get_size, get_duration, is_premium
 # ✅ SYNC: THUMBNAIL_STORAGE_CHANNEL को इम्पोर्ट किया गया है पृथक स्टोरेज के लिए
 from info import BIN_CHANNEL, ADMINS, BOT_TOKEN, MAX_WEB_RESULTS, MAX_THUMB_CACHE, IS_PREMIUM, USE_CAPTION_FILTER, THUMBNAIL_STORAGE_CHANNEL
 # यहाँ db_stats के लिए 'db as filter_db' ऐड किया गया है
-from database.ia_filterdb import COLLECTIONS, get_search_results, get_recent_files, db as filter_db, delete_single_file
+from database.ia_filterdb import COLLECTIONS, get_search_results, get_recent_files, db as filter_db, delete_single_file, backfill_missing_duration
 from database.users_chats_db import db
 # ✅ SYNC FIX: cookie-session identity check अब यहाँ दोबारा नहीं लिखा, web_assets से reuse हो रहा है
 from web.web_assets import get_auth as web_get_auth, fast_json
@@ -94,6 +94,9 @@ async def _get_or_fetch_thumb(fid, col_name="primary", file_ref=None, is_retry=F
                 for attempt in range(5):
                     try:
                         msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=send_id)
+                        # 🎞️ मीडिया ऑब्जेक्ट हाथ में है — पुरानी फाइलों का बचा-कुचा
+                        # duration यहीं DB में भर दो (कोई extra API कॉल नहीं)
+                        await backfill_missing_duration(fid, msg, col_name)
                         thumb_id = None
                         if msg.video and msg.video.thumbs and len(msg.video.thumbs) > 0:
                             thumb_id = msg.video.thumbs[0].file_id
@@ -242,6 +245,8 @@ def _build_results_list(all_m, mode):
             "file_id": db_id,
             "name": d.get("file_name", "Unknown File"),
             "size": get_size(d.get("file_size", 0)),
+            # 🎞️ वीडियो की लंबाई ("2:14:09"); नॉन-वीडियो/पुरानी फाइलों पर "" आता है
+            "duration": get_duration(d.get("duration")),
             "type": d.get("file_type", "document").upper(),
             "source": source_collection_name.capitalize(),
             "raw_collection": source_collection_name,
@@ -364,6 +369,21 @@ async def get_telegram_thumb(req):
 # ─────────────────────────────────────────────────────────
 # 🎥 STREAM SETUP PIPELINE
 # ─────────────────────────────────────────────────────────
+async def _tunnel_stream(fid, mode):
+    """फाइल को BIN_CHANNEL में फॉरवर्ड करके watch/download URL बनाता है।
+    GET और POST दोनों stream setup इसी को इस्तेमाल करते हैं (डुप्लिकेशन नहीं)।
+    साथ ही मौका मिलते ही पुरानी फाइलों का duration DB में backfill कर देता है —
+    यह cosmetic फील्ड है, इसलिए फेल होने पर स्ट्रीम नहीं रोकता।"""
+    msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=fid)
+    await db.add_to_delete_queue(BIN_CHANNEL, msg.id, 3600)
+    try:
+        await backfill_missing_duration(fid, msg)
+    except Exception as e:
+        logger.debug(f"duration backfill skipped for {fid}: {e}")
+    if mode == "watch":
+        await db.track_video_play()
+    return f"/{'download' if mode == 'download' else 'watch'}/{msg.id}"
+
 @search_routes.get("/setup_stream")
 async def setup_stream(req):
     role, _ = await get_user_role(req)
@@ -374,11 +394,7 @@ async def setup_stream(req):
     if not fid:
         return web.Response(text="❌ Missing file_id!", status=400)
     try:
-        msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=fid)
-        await db.add_to_delete_queue(BIN_CHANNEL, msg.id, 3600)
-        if mode == "watch":
-            await db.track_video_play()
-        return web.HTTPFound(f"/{'download' if mode == 'download' else 'watch'}/{msg.id}")
+        return web.HTTPFound(await _tunnel_stream(fid, mode))
     except Exception as e:
         return web.Response(text=f"❌ Error Tunneling Stream: {e}", status=500)
 
@@ -398,11 +414,7 @@ async def setup_stream_post(req):
     if not fid:
         return web.json_response({"error": "Missing file_id!"}, status=400, dumps=fast_json)
     try:
-        msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=fid)
-        await db.add_to_delete_queue(BIN_CHANNEL, msg.id, 3600)
-        if mode == "watch":
-            await db.track_video_play()
-        return web.json_response({"url": f"/{'download' if mode == 'download' else 'watch'}/{msg.id}"}, dumps=fast_json)
+        return web.json_response({"url": await _tunnel_stream(fid, mode)}, dumps=fast_json)
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500, dumps=fast_json)
 
