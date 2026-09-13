@@ -87,17 +87,49 @@ async def get_http_session():
 
 async def get_spell_suggestions(query, limit=5):
     """
-    ✅ FIX: पहले सिर्फ Google Suggest से suggestion मिलता था, जो कई बार ऐसा नाम
-    सुझा देता था जो bot के अपने catalog में मौजूद ही नहीं होता (user को फिर
-    "Still no results found" दिखता)। अब पहले खुद के DB (file_name text index)
-    से करीबी titles ढूँढे जाते हैं — ये हमेशा गारंटीड मौजूद कंटेंट होते हैं।
-    DB में कुछ भी करीबी न मिले तभी Google Suggest को fallback की तरह इस्तेमाल
-    किया जाता है।
+    ✅ UPGRADED: DB se hi suggestion aaye, jo file DB me actually hai.
+    - Pehle apne catalog (file_name text index + prefix fallback) se 5 tak nikalo — ye 100% existing titles hote hain.
+    - Agar DB se kam mile (jaise 2 hi mile), to Google Suggest ko bhi rakho, par uska har suggestion DB me check karke hi rakho.
+    - Google ka result agar DB me exist nahi karta, to discard — taaki "Still no results" wala case kabhi na aaye.
+    - Google Suggest https + 5s timeout ke saath safe hai.
     """
-    db_suggestions = await get_db_spell_suggestions(query, limit=limit)
-    if db_suggestions:
-        return db_suggestions
-    return await get_google_spell_suggestions(query, limit=limit)
+    # 1. DB suggestions - guaranteed existing
+    db_sugs = await get_db_spell_suggestions(query, limit=limit)
+    seen = {s.lower().strip() for s in db_sugs}
+    orig_lower = query.lower().strip()
+    seen.add(orig_lower)
+
+    # 2. Agar limit pura nahi hua, Google se bharo par DB me validate karke
+    if len(db_sugs) < limit:
+        try:
+            google_sugs = await get_google_spell_suggestions(query, limit=limit*2)
+        except:
+            google_sugs = []
+
+        for g in google_sugs:
+            gl = g.lower().strip()
+            if not gl or gl in seen or gl == orig_lower:
+                continue
+            # ✅ Validate: Google suggestion ka koi file DB me hai kya? bypass_count=True fast check
+            try:
+                files, _, _, _ = await get_search_results(g, 1, 0, collection_type="all", bypass_count=True)
+                if files:
+                    db_sugs.append(g)
+                    seen.add(gl)
+            except Exception:
+                # check fail hua to bhi Google suggestion ko DB spell se double-check
+                try:
+                    # agar is Google term ke liye DB spell kuch de de, to matlab close match DB me hai
+                    alt = await get_db_spell_suggestions(g, limit=1)
+                    if alt:
+                        db_sugs.append(alt[0])
+                        seen.add(alt[0].lower().strip())
+                except:
+                    pass
+            if len(db_sugs) >= limit:
+                break
+
+    return db_sugs[:limit]
 
 async def get_google_spell_suggestions(query, limit=5):
     """
