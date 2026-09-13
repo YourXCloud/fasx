@@ -16,11 +16,35 @@ from info import (
     LOG_CHANNEL, PICS, IS_STREAM, REACTIONS, PM_FILE_DELETE_TIME
 )
 from utils import (
-    is_premium, get_settings, get_size, temp,
+    is_premium, get_settings, get_size, get_duration, temp,
     get_readable_time, get_wish
 )
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# 📝 FILE CAPTION BUILDER (duration-aware)
+# ─────────────────────────────────────────────
+def _build_file_caption(template, file_doc):
+    """कैप्शन टेम्पलेट को फाइल-डेटा से भरता है। अब {duration} प्लेसहोल्डर भी
+    सपोर्टेड है ('2:14:09' फॉर्मेट) — वीडियो न होने या DB में duration सेव न होने
+    पर यह खाली स्ट्रिंग बनता है, इसलिए कैप्शन में कोई '0:00' कचरा नहीं छपता।
+    दो-लेयर fallback जानबूझकर है: अगर ग्रुप का पुराना सेव्ड टेम्पलेट कोई ऐसा
+    प्लेसहोल्डर रखता हो जो हम नहीं भेजते, तो KeyError से फाइल भेजना फेल न हो —
+    पहले duration हटाकर दोबारा कोशिश, फिर सिर्फ़ नाम।"""
+    fields = {
+        "file_name": str(file_doc.get("file_name", "File")),
+        "file_size": get_size(file_doc.get("file_size", 0) or 0),
+        "duration": get_duration(file_doc.get("duration")),
+    }
+    try:
+        return template.format(**fields)
+    except (KeyError, IndexError):
+        fields.pop("duration", None)
+        try:
+            return template.format(**fields)
+        except Exception:
+            return f"<b>{fields['file_name']}</b>"
 
 # ─────────────────────────────────────────────
 # ✅ MINI APP URL - HTTPS Auto-Fix Sync
@@ -95,10 +119,7 @@ async def start(client, message):
                 settings = await get_settings(grp_id)
                 cap_template = settings.get('caption', script.FILE_CAPTION)
                 try:
-                    caption = cap_template.format(
-                        file_name=str(file.get('file_name', 'File')),
-                        file_size=get_size(file.get('file_size', 0))
-                    )
+                    caption = _build_file_caption(cap_template, file)
                 except Exception:
                     caption = f"<b>{file.get('file_name', 'File')}</b>"
 

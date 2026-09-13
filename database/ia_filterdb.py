@@ -42,6 +42,19 @@ COLLECTIONS = {
     "actors":  actors,   
 }
 
+# ─────────────────────────────────────────────────────────
+# 🎞️ SHARED FILE PROJECTIONS (एक ही जगह, ताकि हर सर्च में
+# एक जैसे फील्ड्स मिलें — duration सहित)
+# ─────────────────────────────────────────────────────────
+FILE_PROJECTION = {
+    "_id": 1, "file_name": 1, "file_size": 1, "file_type": 1,
+    "file_ref": 1, "caption": 1, "thumb_url": 1, "duration": 1,
+}
+# $text सर्च में textScore मेटा भी projection में होना ज़रूरी है
+FILE_PROJECTION_SCORE = {**FILE_PROJECTION, "score": {"$meta": "textScore"}}
+# 'Recently Added' लिस्ट को added_on से sort करना होता है
+RECENT_PROJECTION = {**FILE_PROJECTION, "added_on": 1}
+
 # ⚡ GLOBAL STATUS EXPENSIVE COUNT CACHE
 _stats_cache = None
 _stats_cache_time = 0
@@ -163,6 +176,19 @@ async def save_file(media, collection_type="primary"):
 
         update_set = {"file_ref":  media.file_id, "file_name": f_name, "file_size": media.file_size, "file_type": file_type}
 
+        # 🎞️ VIDEO/AUDIO DURATION CAPTURE — Telegram सिर्फ़ Video/Audio/Voice ऑब्जेक्ट
+        # पर `duration` देता है (documents/photos पर यह attribute नहीं होता), इसलिए
+        # getattr से safe-read करके सिर्फ़ वैध (>0) होने पर ही DB में लिखते हैं।
+        # पुरानी फाइलें जो पहले बिना duration के सेव हुई थीं, वो stream/thumb के
+        # वक़्त backfill_missing_duration() से अपने आप भर जाती हैं।
+        duration = getattr(media, "duration", 0) or 0
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 0:
+            update_set["duration"] = duration
+
         update_payload = {"$set": update_set, "$setOnInsert": {"added_on": time.time()}}
         unset_payload = {}
 
@@ -176,6 +202,44 @@ async def save_file(media, collection_type="primary"):
     except Exception as e:
         logger.error(f"save_file error: {e}")
         return "err"
+
+# ─────────────────────────────────────────────────────────
+# 🎞️ DURATION BACKFILL (पुरानी फाइलों के लिए lazy, no extra API call)
+# ─────────────────────────────────────────────────────────
+async def backfill_missing_duration(file_id, media_msg, col_name=None):
+    """DB डॉक्युमेंट में `duration` न हो तो उसे एक Telegram मैसेज ऑब्जेक्ट से भर देता है।
+
+    यह तभी कॉल होता है जब मीडिया ऑब्जेक्ट पहले से हाथ में हो (thumb जनरेशन या
+    /setup_stream के BIN_CHANNEL फॉरवर्ड के दौरान) — यानी कोई अतिरिक्त API कॉल या
+    डाउनलोड नहीं। collection_type न मिले तो तीनों फाइल-कलेक्शन में ढूँढता है।
+    हर तरह की विफलता पर चुपचाप `False` लौटाता है क्योंकि यह सिर्फ़ एक
+    cosmetic फील्ड है, स्ट्रीमिंग/सर्च को रोकना नहीं चाहिए।"""
+    if not file_id or media_msg is None:
+        return False
+    try:
+        media = getattr(media_msg, media_msg.media.value, None) if getattr(media_msg, "media", None) else None
+        if media is None:
+            return False
+        duration = int(getattr(media, "duration", 0) or 0)
+    except Exception:
+        return False
+    if duration <= 0:
+        return False
+
+    col = COLLECTIONS.get(col_name) if col_name else None
+    cols = [col] if (col is not None and col is not actors) else [primary, cloud, archive]
+
+    for c in cols:
+        try:
+            res = await c.update_one(
+                {"_id": file_id, "$or": [{"duration": {"$exists": False}}, {"duration": {"$lte": 0}}]},
+                {"$set": {"duration": duration}},
+            )
+            if res.matched_count:
+                return True
+        except Exception as e:
+            logger.debug(f"duration backfill failed [{c.name}] {file_id}: {e}")
+    return False
 
 # ─────────────────────────────────────────────────────────
 # 🔍 REGEX BUILDER WITH SHORT-QUERY SHIELD
@@ -206,7 +270,7 @@ async def _search(col, raw_query: str, regex, offset: int, limit: int, lang=None
         text_flt = {"$text": {"$search": strict_query}}
         if lang: text_flt = {"$and": [text_flt, {"file_name": re.compile(lang, re.IGNORECASE)}]}
 
-        cursor = col.find(text_flt, {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1, "score": {"$meta": "textScore"}})
+        cursor = col.find(text_flt, FILE_PROJECTION_SCORE)
         cursor.sort([("score", {"$meta": "textScore"})])
         cursor.skip(offset).limit(limit)
         docs = await cursor.to_list(length=limit)
@@ -221,7 +285,7 @@ async def _search(col, raw_query: str, regex, offset: int, limit: int, lang=None
     reg_flt = {"$or": [{"file_name": regex}, {"caption": regex}]} if USE_CAPTION_FILTER else {"file_name": regex}
     if lang: reg_flt = {"$and": [reg_flt, {"file_name": re.compile(lang, re.IGNORECASE)}]}
 
-    cursor = col.find(reg_flt, {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1}).sort('_id', -1)
+    cursor = col.find(reg_flt, FILE_PROJECTION).sort('_id', -1)
     cursor.skip(offset).limit(limit)
     docs = await cursor.to_list(length=limit)
     for doc in docs: 
@@ -308,7 +372,7 @@ async def get_search_results(query, max_results, offset=0, lang=None, collection
                 curr_offset -= cnt
                 continue
 
-            cursor = col.find(flt, {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1})
+            cursor = col.find(flt, FILE_PROJECTION)
             if is_text:
                 cursor = cursor.sort([("score", {"$meta": "textScore"})])
             else:
@@ -479,7 +543,7 @@ async def get_db_spell_suggestions(query, limit=6, collection_type="all"):
 
     return suggestions[:limit]
 async def get_recent_files(max_results, offset=0, collection_type="all"):
-    proj = {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1, "added_on": 1}
+    proj = RECENT_PROJECTION
 
     if collection_type == "all":
         take = offset + max_results + 1  # +1 ताकि has_more पता चल सके
@@ -589,7 +653,7 @@ async def delete_single_file(file_id, collection_type="primary"):
 async def get_file_details(file_id):
     try:
         for col in [primary, cloud, archive]:
-            doc = await col.find_one({"_id": file_id}, {"_id": 1, "file_name": 1, "file_size": 1, "file_ref": 1, "caption": 1, "thumb_url": 1})
+            doc = await col.find_one({"_id": file_id}, FILE_PROJECTION)
             if doc:
                 doc["file_id"] = doc["_id"]  
                 return doc
@@ -646,7 +710,7 @@ async def get_actor_search_results(actor_name, tags_list, max_results, offset=0,
     cols = [primary, cloud, archive] if collection_type == "all" else [COLLECTIONS.get(collection_type, primary)]
     
     for col in cols:
-        cursor = col.find(reg_flt, {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1}).sort('_id', -1)
+        cursor = col.find(reg_flt, FILE_PROJECTION).sort('_id', -1)
         cursor.skip(offset).limit(max_results)
         docs = await cursor.to_list(length=max_results)
         if docs:

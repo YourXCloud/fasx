@@ -66,6 +66,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--txt);min-
 
 /* poster box (video) */
 .pb{position:relative;padding-top:56.25%;overflow:hidden}
+.dc{position:absolute;bottom:7px;right:7px;background:rgba(0,0,0,.78);backdrop-filter:blur(8px);color:#fff;border-radius:5px;padding:2px 6px;font-size:10px;font-weight:700;border:1px solid rgba(255,255,255,.14);z-index:3;font-variant-numeric:tabular-nums}
 .pb{background:linear-gradient(90deg,var(--bg3) 0,#2a2a38 50%,var(--bg3) 100%);background-size:200% 100%;animation:shimmer 1.5s infinite linear}
 .fp{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .3s}
 .fp.on{opacity:1}
@@ -349,8 +350,8 @@ async function doSearch(off,allowEmpty){
     d.results.forEach(f=>{
       let sc=['primary','cloud','archive'].includes((f.source||'').toLowerCase())?f.source.toLowerCase():'primary';
       let ph=pMode!=='none'
-        ?`<div class="pb" id="pb-${f.file_id}"><img src="${f.tg_thumb}" class="fp" loading="lazy" onload="this.classList.add('on')" onerror="thumbErr('${f.file_id}')"><div class="pt"><span class="tc">${esc(f.type||'VIDEO')}</span><span class="sc">${esc(f.size||'')}</span><span class="sp ${sc}"><span class="sd"></span>${sc.toUpperCase()}</span></div></div>`
-        :`<div class="ti"><span class="tt">${esc(f.type||'VIDEO')}</span><span class="ts">${esc(f.size||'')}</span><span class="tp ${sc}"><span class="sd"></span>${sc.toUpperCase()}</span></div>`;
+        ?`<div class="pb" id="pb-${f.file_id}"><img src="${f.tg_thumb}" class="fp" loading="lazy" onload="this.classList.add('on')" onerror="thumbErr('${f.file_id}')"><div class="pt"><span class="tc">${esc(f.type||'VIDEO')}</span><span class="sc">${esc(f.size||'')}</span>${f.duration?`<span class="dc">&#9201; ${esc(f.duration)}</span>`:''}<span class="sp ${sc}"><span class="sd"></span>${sc.toUpperCase()}</span></div></div>`
+        :`<div class="ti"><span class="tt">${esc(f.type||'VIDEO')}</span><span class="ts">${esc(f.size||'')}</span>${f.duration?`<span class="tc">&#9201; ${esc(f.duration)}</span>`:''}<span class="tp ${sc}"><span class="sd"></span>${sc.toUpperCase()}</span></div>`;
       h+=`<div class="fc ce" onclick="openStream('${f.file_id}','${f.name.replace(/'/g,"\\'").replace(/`/g,'\\`')}')">${ph}<div class="fb"><div class="fn">${esc(f.name)}</div></div></div>`;
     });
     let res=Q1('#results');res.innerHTML=h;stagger(res);
