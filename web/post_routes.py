@@ -7,16 +7,12 @@ from bson.objectid import ObjectId
 from utils import temp
 from info import THUMBNAIL_STORAGE_CHANNEL
 from database.users_chats_db import db as motor_db
-from web.web_assets import build_page, get_auth, require_active_plan
+from web.web_assets import build_page, get_auth, require_active_plan, fast_json
 
 post_routes = web.RouteTableDef()
 posts_col = motor_db.db["Posts"]
 
-# ─────────────────────────────────────────────────────────
-# ⚡ ULTRA-FAST ORJSON DUMP FUNCTION
-# ─────────────────────────────────────────────────────────
-def fast_json(data):
-    return orjson.dumps(data).decode('utf-8')
+# fast_json from web_assets
 
 # ─────────────────────────────────────────────────────────
 # 🛠️ ImgBB Auto-Converter Helper Functions

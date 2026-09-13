@@ -117,6 +117,34 @@ async def db_count_documents():
         return {"primary": 0, "cloud": 0, "archive": 0, "total": 0, "primary_thumb": 0, "cloud_thumb": 0, "archive_thumb": 0, "total_thumb": 0}
 
 # ─────────────────────────────────────────────────────────
+# 📊 DIRECTORY & POST STATS HELPERS (centralized to avoid duplication)
+# ─────────────────────────────────────────────────────────
+async def get_directory_counts():
+    try:
+        tot = await actors.count_documents({})
+        app_c = await actors.count_documents({"category": "app"})
+        web_c = await actors.count_documents({"category": "website"})
+        act_c = await actors.count_documents({"category": "actor"})
+        return tot, act_c, app_c, web_c
+    except Exception:
+        return 0,0,0,0
+
+async def get_post_stats():
+    try:
+        raw = {}
+        pipeline = [{"$group": {"_id": {"$ifNull": ["$category", "Uncategorized"]}, "count": {"$sum": 1}}}]
+        async for doc in posts.aggregate(pipeline):
+            raw[doc["_id"]] = doc["count"]
+    except Exception:
+        raw = {}
+    movies = raw.get("Movies", 0)
+    webseries = raw.get("Web Series", 0)
+    appvid = raw.get("App Video", 0)
+    porn = raw.get("Porn", 0)
+    total = sum(raw.values())
+    return total, movies, webseries, appvid, porn, raw
+
+# ─────────────────────────────────────────────────────────
 # 💾 SAVE FILE
 # ─────────────────────────────────────────────────────────
 async def save_file(media, collection_type="primary"):

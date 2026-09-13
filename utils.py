@@ -21,7 +21,7 @@ class temp(object):
     BANNED_USERS, BANNED_CHATS = [], []
     ME, BOT, U_NAME, B_NAME = None, None, None, None
     CANCEL = False 
-    ADMIN_TOKENS, ADMIN_SESSIONS, FILES, PM_FILES = {}, {}, {}, {}
+    FILES, PM_FILES = {}, {}
     USER_SESSIONS, REG_PENDING = {}, {}
 
 # ─────────────────────────────────────────────

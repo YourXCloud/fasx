@@ -21,18 +21,13 @@ from info import BIN_CHANNEL, ADMINS, BOT_TOKEN, MAX_WEB_RESULTS, MAX_THUMB_CACH
 from database.ia_filterdb import COLLECTIONS, get_search_results, get_recent_files, db as filter_db, delete_single_file
 from database.users_chats_db import db
 # ✅ SYNC FIX: cookie-session identity check अब यहाँ दोबारा नहीं लिखा, web_assets से reuse हो रहा है
-from web.web_assets import get_auth as web_get_auth
+from web.web_assets import get_auth as web_get_auth, fast_json
 
 logger = logging.getLogger(__name__)
 
 search_routes = web.RouteTableDef()
 
-# ─────────────────────────────────────────────────────────
-# ⚡ ULTRA-FAST ORJSON DUMP FUNCTION
-# ─────────────────────────────────────────────────────────
-def fast_json(data):
-    """orjson बाइट्स (bytes) में डेटा देता है, aiohttp के लिए इसे स्ट्रिंग में डिकोड करना होता है"""
-    return orjson.dumps(data).decode('utf-8')
+# fast_json now from web_assets
 
 # ✅ BUG FIX: यह duplicate function हटाया गया।
 # ia_filterdb.py के get_search_results()/_search() पहले से ही raw query से

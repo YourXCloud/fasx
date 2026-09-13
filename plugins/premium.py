@@ -39,7 +39,7 @@ from Script import script
 # Is file ka apna 'is_premium(uid, bot)' poori tarah hataya gaya - wo kahin
 # bhi call nahi hota tha (dead code), baki sab jagah utils.is_premium hi
 # use hota hai.
-from utils import temp, get_readable_time, get_wish, get_local_now, parse_expire_time, safe_del
+from utils import temp, get_readable_time, get_wish, get_local_now, parse_expire_time, safe_del, get_ist_str
 
 logger = logging.getLogger(__name__)
 VERIFY_CACHE = {}
@@ -50,13 +50,7 @@ ADMIN_ALERT = "👑 You are the Admin! You have Lifetime Premium access."
 # =========================================
 # Is file ke liye bacha hua akela lifecycle helper
 # =========================================
-# NOTE: yeh jaan-boojhkar utils.get_ist_str se alag rakha gaya hai. Premium
-# plan ka 'expire' get_local_now() (naive, pehle se local time) se banta hai,
-# isliye ise seedha format karna hai - utils.get_ist_str apne dt mein +5:30
-# jodta hai, jo yahan lagane par time galat (double-shifted) dikha dega.
-def get_ist_str(dt):
-    """Premium expiry ko sundar padhne-yogya string mein render karta hai"""
-    return dt.strftime("%d %B %Y, %I:%M %p") if dt else "Unknown"
+# get_ist_str ab utils.py se reuse ho raha hai (duplicate hataya)
 
 # =========================================
 # ⏰ SMART AUTOMATED REMINDER PIPELINE

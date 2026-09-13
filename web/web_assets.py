@@ -1,8 +1,12 @@
 import time
+import orjson
 from aiohttp import web
 from info import ADMINS, MAX_WEB_RESULTS
 from utils import temp
 from database.users_chats_db import db as user_db
+
+def fast_json(data):
+    return orjson.dumps(data).decode('utf-8')
 
 # ----------------- ULTRA-PREMIUM GLASS DIAGNOSTICS ASSETS -----------------
 CSS = """

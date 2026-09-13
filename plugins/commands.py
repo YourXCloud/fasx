@@ -9,7 +9,7 @@ from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppIn
 
 from Script import script
 # ✅ FIX: actors कलेक्शन को इम्पोर्ट किया गया ताकि हम डायरेक्टरी की गिनती कर सकें
-from database.ia_filterdb import db_count_documents, get_file_details, delete_files, actors
+from database.ia_filterdb import db_count_documents, get_file_details, delete_files, actors, get_directory_counts, get_post_stats as db_post_stats
 from database.users_chats_db import db
 from web.post_routes import posts_col
 
@@ -40,25 +40,10 @@ def _build_mini_app_url(base_url: str) -> str:
 MINI_APP_URL = _build_mini_app_url(URL)
 
 
-# ─────────────────────────────────────────────
-# 📝 POST CMS STATS — category-wise counts (reused by /stats & stats callback)
-# ─────────────────────────────────────────────
 async def _get_post_stats():
-    try:
-        raw_post_counts = {}
-        pipeline = [{"$group": {"_id": {"$ifNull": ["$category", "Uncategorized"]}, "count": {"$sum": 1}}}]
-        async for doc in posts_col.aggregate(pipeline):
-            raw_post_counts[doc["_id"]] = doc["count"]
-    except Exception as e:
-        raw_post_counts = {}
-        logger.error(f"Post Stats Error: {e}")
-
-    post_movies = raw_post_counts.get("Movies", 0)
-    post_webseries = raw_post_counts.get("Web Series", 0)
-    post_appvid = raw_post_counts.get("App Video", 0)
-    post_porn = raw_post_counts.get("Porn", 0)
-    post_total = sum(raw_post_counts.values())
-    return post_total, post_movies, post_webseries, post_appvid, post_porn
+    # centralized helper reuse
+    total, movies, webseries, appvid, porn, _ = await db_post_stats()
+    return total, movies, webseries, appvid, porn
 
 
 # ─────────────────────────────────────────────

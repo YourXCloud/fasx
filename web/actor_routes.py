@@ -6,16 +6,11 @@ from utils import temp, get_size
 # ✅ SYNC: ACTOR_STORAGE_CHANNEL को ऐड किया गया है पृथक अपलोड के लिए
 from info import BIN_CHANNEL, MAX_WEB_RESULTS, ACTOR_STORAGE_CHANNEL
 from database.ia_filterdb import actors, get_actor_search_results, delete_actor_profile, delete_gallery_image_by_index
-from web.web_assets import build_page, get_auth, form_wrapper, require_active_plan
+from web.web_assets import build_page, get_auth, form_wrapper, require_active_plan, fast_json
 
 actor_routes = web.RouteTableDef()
 
-# ─────────────────────────────────────────────────────────
-# ⚡ ULTRA-FAST ORJSON DUMP FUNCTION
-# ─────────────────────────────────────────────────────────
-def fast_json(data):
-    """orjson बाइट्स (bytes) में डेटा देता है, aiohttp के लिए इसे स्ट्रिंग में डिकोड करना होता है"""
-    return orjson.dumps(data).decode('utf-8')
+# fast_json from web_assets
 
 # ─────────────────────────────────────────────────────────
 # 🌐 MAIN HOMEPAGE: UNIVERSAL DIRECTORY WITH SEARCH & FILTERS

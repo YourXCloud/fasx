@@ -25,12 +25,6 @@ def is_valid_ip(ip):
     )
     return re.match(ip_pattern, ip) is not None
 
-def get_channels(env_var):
-    val = environ.get(env_var, "").replace(",", " ").strip()
-    if not val: return []
-    # ✅ टेलीग्राम आईडी के ऋणात्मक चिह्नों (-100) को सुरक्षित पार्स करने के लिए न्यूमेरिक चेक
-    return [int(x) for x in val.split() if x.replace("-", "").isnumeric()]
-
 # ─────────────────────────────────────────────
 # 🤖 BOT CREDENTIALS
 # ─────────────────────────────────────────────
