@@ -376,7 +376,7 @@ async def process_multipart_post(req, action="publish"):
 
     raw_urls = []
     if screenshot_urls_raw:
-        raw_urls = [u.strip() for u in screenshot_urls_raw.split('\n') if u.strip()]
+        raw_urls = [u.strip() for u in screenshot_urls_raw.splitlines() if u.strip()]
         tasks.append(convert_all_ibb_links(raw_urls))
         
     if tasks:

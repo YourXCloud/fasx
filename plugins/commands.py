@@ -11,8 +11,6 @@ from Script import script
 # ✅ FIX: actors कलेक्शन को इम्पोर्ट किया गया ताकि हम डायरेक्टरी की गिनती कर सकें
 from database.ia_filterdb import db_count_documents, get_file_details, delete_files, actors, get_directory_counts, get_post_stats as db_post_stats
 from database.users_chats_db import db
-from web.post_routes import posts_col
-
 from info import (
     IS_PREMIUM, URL, BIN_CHANNEL, ADMINS,
     LOG_CHANNEL, PICS, IS_STREAM, REACTIONS, PM_FILE_DELETE_TIME

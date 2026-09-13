@@ -230,10 +230,9 @@ class Bot(Client):
     async def iter_messages(self, chat_id: Union[int, str], limit: int, offset: int = 0) -> AsyncGenerator["types.Message", None]:
         # offset = skip count, message ids start at 1
         current = max(1, offset) if offset else 1
-        # if offset==0 we start from 1, if offset=1000 we start from 1000
         if offset == 0:
             current = 1
-        while current < limit:
+        while current <= limit:
             diff = min(200, limit - current + 1)
             try:
                 ids = [i for i in range(current, current + diff) if i > 0]
