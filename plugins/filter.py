@@ -85,7 +85,7 @@ async def get_http_session():
         _http_session = aiohttp.ClientSession()
     return _http_session
 
-async def get_spell_suggestions(query, limit=5):
+async def get_spell_suggestions(query, limit=6):
     """
     ✅ UPGRADED: DB se hi suggestion aaye, jo file DB me actually hai.
     - Pehle apne catalog (file_name text index + prefix fallback) se 5 tak nikalo — ye 100% existing titles hote hain.
@@ -131,7 +131,7 @@ async def get_spell_suggestions(query, limit=5):
 
     return db_sugs[:limit]
 
-async def get_google_spell_suggestions(query, limit=5):
+async def get_google_spell_suggestions(query, limit=6):
     """
     Google Suggest से एक साथ कई suggestions लाता है (पहले सिर्फ पहला वाला लिया
     जाता था — data[1][0] — बाकी सारे suggestions जो API वैसे भी भेजता है, वो
@@ -353,7 +353,7 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
             # ✅ FIX: पहले सिर्फ़ 1 suggestion मिलता था, अब Google Suggest से मिले
             # सारे (5 तक) suggestions एक-एक बटन के रूप में दिखाए जाते हैं ताकि
             # सही टाइटल चुनने का ज़्यादा मौका मिले।
-            suggestions = await get_spell_suggestions(search, limit=5)
+            suggestions = await get_spell_suggestions(search, limit=6)
             if suggestions:
                 try:
                     m = await msg.reply("🤔 Checking spelling...", quote=True)
