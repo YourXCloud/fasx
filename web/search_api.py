@@ -21,18 +21,13 @@ from info import BIN_CHANNEL, ADMINS, BOT_TOKEN, MAX_WEB_RESULTS, MAX_THUMB_CACH
 from database.ia_filterdb import COLLECTIONS, get_search_results, get_recent_files, db as filter_db, delete_single_file
 from database.users_chats_db import db
 # ✅ SYNC FIX: cookie-session identity check अब यहाँ दोबारा नहीं लिखा, web_assets से reuse हो रहा है
-from web.web_assets import get_auth as web_get_auth
+from web.web_assets import get_auth as web_get_auth, fast_json
 
 logger = logging.getLogger(__name__)
 
 search_routes = web.RouteTableDef()
 
-# ─────────────────────────────────────────────────────────
-# ⚡ ULTRA-FAST ORJSON DUMP FUNCTION
-# ─────────────────────────────────────────────────────────
-def fast_json(data):
-    """orjson बाइट्स (bytes) में डेटा देता है, aiohttp के लिए इसे स्ट्रिंग में डिकोड करना होता है"""
-    return orjson.dumps(data).decode('utf-8')
+# fast_json now from web_assets
 
 # ✅ BUG FIX: यह duplicate function हटाया गया।
 # ia_filterdb.py के get_search_results()/_search() पहले से ही raw query से
@@ -58,7 +53,7 @@ TRENDING_CACHE_TTL = 300
 # ─────────────────────────────────────────────────────────
 # 📸 OPTIMIZED THUMBNAIL ENGINE (Bytes-in-RAM True LRU)
 # ─────────────────────────────────────────────────────────
-async def _get_or_fetch_thumb(fid, col_name="primary", is_retry=False):
+async def _get_or_fetch_thumb(fid, col_name="primary", file_ref=None, is_retry=False):
     cache_key = f"{col_name}:{fid}"
 
     if is_retry:
@@ -79,7 +74,8 @@ async def _get_or_fetch_thumb(fid, col_name="primary", is_retry=False):
 
             async def _fetch():
                 target_collection = COLLECTIONS.get(col_name, COLLECTIONS["primary"])
-                existing = await target_collection.find_one({"_id": fid}, {"thumb_url": 1})
+                # fetch thumb_url + file_ref together
+                existing = await target_collection.find_one({"_id": fid}, {"thumb_url": 1, "file_ref": 1})
 
                 if existing and existing.get("thumb_url", "").startswith("TG_ID:"):
                     saved_thumb_id = existing["thumb_url"].replace("TG_ID:", "")
@@ -92,11 +88,13 @@ async def _get_or_fetch_thumb(fid, col_name="primary", is_retry=False):
                     except Exception:
                         pass
 
+                # resolve file_id to use for send_cached_media
+                send_id = file_ref or (existing.get("file_ref") if existing else None) or fid
+
                 for attempt in range(5):
                     try:
-                        msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=fid)
+                        msg = await temp.BOT.send_cached_media(chat_id=BIN_CHANNEL, file_id=send_id)
                         thumb_id = None
-
                         if msg.video and msg.video.thumbs and len(msg.video.thumbs) > 0:
                             thumb_id = msg.video.thumbs[0].file_id
                         elif msg.document and msg.document.thumbs and len(msg.document.thumbs) > 0:
@@ -117,22 +115,19 @@ async def _get_or_fetch_thumb(fid, col_name="primary", is_retry=False):
                             thumb_cache[cache_key] = "NO_THUMB"
                             await db.add_to_delete_queue(BIN_CHANNEL, msg.id, 5)
                             return None
-
                     except Exception as e:
                         err_text = str(e)
                         if "FLOOD_WAIT" in err_text or "420" in err_text:
-                            match = re.search(r'wait of (\d+) second', err_text)
-                            wait_time = int(match.group(1)) if match else 20
+                            m = re.search(r'wait of (\d+) second', err_text)
+                            wait_time = int(m.group(1)) if m else 20
                             await asyncio.sleep(wait_time + 2)
                             continue
-                        await asyncio.sleep(2)
+                        await asyncio.sleep(1)
                         continue
-
                 return None
 
             async with thumb_semaphore:
                 return await _fetch()
-
     finally:
         thumb_locks.pop(cache_key, None)
 
@@ -152,12 +147,11 @@ async def bg_prefetch_worker(tg_id, q, col, mode, prefetch_offset, lim):
 
         if docs:
             PREFETCH_CACHE[cache_key] = (docs, next_off)
-            
             if mode != "none":
                 warmup_docs = docs if tg_id in ADMINS else docs[:5]
                 for doc in warmup_docs:
                     asyncio.create_task(
-                        _get_or_fetch_thumb(doc["_id"], col_name=doc.get("source_col", "primary"))
+                        _get_or_fetch_thumb(doc["_id"], col_name=doc.get("source_col", "primary"), file_ref=doc.get("file_ref"))
                     )
                     await asyncio.sleep(0.01) 
 

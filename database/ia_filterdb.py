@@ -117,6 +117,34 @@ async def db_count_documents():
         return {"primary": 0, "cloud": 0, "archive": 0, "total": 0, "primary_thumb": 0, "cloud_thumb": 0, "archive_thumb": 0, "total_thumb": 0}
 
 # ─────────────────────────────────────────────────────────
+# 📊 DIRECTORY & POST STATS HELPERS (centralized to avoid duplication)
+# ─────────────────────────────────────────────────────────
+async def get_directory_counts():
+    try:
+        tot = await actors.count_documents({})
+        app_c = await actors.count_documents({"category": "app"})
+        web_c = await actors.count_documents({"category": "website"})
+        act_c = await actors.count_documents({"category": "actor"})
+        return tot, act_c, app_c, web_c
+    except Exception:
+        return 0,0,0,0
+
+async def get_post_stats():
+    try:
+        raw = {}
+        pipeline = [{"$group": {"_id": {"$ifNull": ["$category", "Uncategorized"]}, "count": {"$sum": 1}}}]
+        async for doc in posts.aggregate(pipeline):
+            raw[doc["_id"]] = doc["count"]
+    except Exception:
+        raw = {}
+    movies = raw.get("Movies", 0)
+    webseries = raw.get("Web Series", 0)
+    appvid = raw.get("App Video", 0)
+    porn = raw.get("Porn", 0)
+    total = sum(raw.values())
+    return total, movies, webseries, appvid, porn, raw
+
+# ─────────────────────────────────────────────────────────
 # 💾 SAVE FILE
 # ─────────────────────────────────────────────────────────
 async def save_file(media, collection_type="primary"):
@@ -299,10 +327,14 @@ async def get_search_results(query, max_results, offset=0, lang=None, collection
 
     else:
         col = COLLECTIONS.get(collection_type, primary)
-        results, total = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=bypass_count)
+        # ✅ FIX: single collection ke liye bhi cached count reuse (fast pagination)
+        if cached_counts and collection_type in cached_counts and not bypass_count:
+            results, _ = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=True)
+            total = cached_counts[collection_type]
+        else:
+            results, total = await _search(col, raw_query, regex, offset, max_results, lang, bypass_count=bypass_count)
         actual_src = collection_type.capitalize()
         if not results: total = 0
-        # ✅ FIX: single-collection टैब (primary/cloud/archive) के लिए भी counts_out भरो
         if counts_out is not None:
             counts_out[collection_type] = total
 
@@ -334,93 +366,118 @@ def _clean_title_guess(file_name: str) -> str:
     if not file_name: return ""
     return re.sub(r'\s+', ' ', file_name).strip()
 
-async def get_db_spell_suggestions(query, limit=5, collection_type="all"):
+async def get_db_spell_suggestions(query, limit=6, collection_type="all"):
     q = str(query or "").strip()
     if not q: return []
 
-    cols = [primary, cloud, archive] if collection_type == "all" else [COLLECTIONS.get(collection_type, primary)]
-    seen = {q.lower()}
-    candidates = []
+    cols_map = {"primary": primary, "cloud": cloud, "archive": archive}
+    if collection_type == "all":
+        cols = [primary, cloud, archive]
+    else:
+        cols = [cols_map.get(collection_type, primary)]
 
-    try:
-        # ✅ unquoted $text search जानबूझकर लगाया — get_search_results वाला strict
-        # (हर शब्द quoted, phrase-जैसा) search typo पर कुछ नहीं देगा। यहाँ ढीला
-        # OR-style stemmed match चाहिए ताकि छोटी spelling गलतियों पर भी करीबी
-        # titles मिल जाएँ।
-        tasks = [
-            col.find(
-                {"$text": {"$search": q}},
-                {"file_name": 1, "score": {"$meta": "textScore"}}
-            ).sort([("score", {"$meta": "textScore"})]).limit(15).to_list(length=15)
-            for col in cols
-        ]
-        results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as e:
-        logger.debug(f"DB spell suggestion text-search failed: {e}")
-        return []
-
-    for res in results_lists:
-        if isinstance(res, Exception):
-            continue
-        candidates.extend(res)
-
-    candidates.sort(key=lambda d: d.get("score", 0), reverse=True)
-
+    seen = {q.lower().strip()}
     suggestions = []
-    for doc in candidates:
-        title = _clean_title_guess(doc.get("file_name", ""))
-        key = title.lower()
-        if not title or key in seen:
-            continue
-        seen.add(key)
-        suggestions.append(title)
-        if len(suggestions) >= limit:
-            break
 
-    # ✅ FIX: पूरी तरह अनजान/बिगड़ा हुआ query (जैसे "Hootx") पर ऊपर वाला
-    # stemmed $text search भी कभी-कभी कुछ नहीं देता (कोई शब्द match ही नहीं
-    # होता), और तब पहले suggestions पूरी तरह खाली रह जाते थे। अब उस case में
-    # query के पहले 3 अक्षरों से एक ढीला "prefix" regex fallback चलाया जाता है
-    # — ताकि कम से कम मिलते-जुलते शुरुआती अक्षरों वाले titles तो सुझाए जा सकें।
-    if not suggestions and len(q) >= 3:
-        prefix = re.escape(q[:3])
-        prefix_regex = re.compile(r'(\b|[\s.\-_])' + prefix, re.IGNORECASE)
-        try:
-            tasks = [
-                col.find(
-                    {"file_name": prefix_regex},
-                    {"file_name": 1}
-                ).limit(15).to_list(length=15)
-                for col in cols
-            ]
-            prefix_results = await asyncio.gather(*tasks, return_exceptions=True)
-        except Exception as e:
-            logger.debug(f"DB spell suggestion prefix-fallback failed: {e}")
-            prefix_results = []
-
-        prefix_candidates = []
-        for res in prefix_results:
-            if isinstance(res, Exception):
-                continue
-            prefix_candidates.extend(res)
-
-        for doc in prefix_candidates:
+    def _add_from_docs(docs):
+        for doc in docs:
+            if len(suggestions) >= limit:
+                break
             title = _clean_title_guess(doc.get("file_name", ""))
             key = title.lower()
             if not title or key in seen:
                 continue
             seen.add(key)
             suggestions.append(title)
+
+    # 1️⃣ Balanced $text search - har collection se 2-3 lao taaki Primary/Cloud/Archive teeno se aaye
+    try:
+        per_col = max(2, (limit // len(cols)) + 1)
+        for col in cols:
             if len(suggestions) >= limit:
                 break
+            try:
+                cur = col.find(
+                    {"$text": {"$search": q}},
+                    {"file_name": 1, "score": {"$meta": "textScore"}}
+                ).sort([("score", {"$meta": "textScore"})]).limit(20)
+                docs = await cur.to_list(length=20)
+                docs.sort(key=lambda d: d.get("score", 0), reverse=True)
+                _add_from_docs(docs[:per_col])
+            except Exception:
+                continue
+        if len(suggestions) < limit:
+            tasks = [
+                col.find(
+                    {"$text": {"$search": q}},
+                    {"file_name": 1, "score": {"$meta": "textScore"}}
+                ).sort([("score", {"$meta": "textScore"})]).limit(20).to_list(length=20)
+                for col in cols
+            ]
+            results_lists = await asyncio.gather(*tasks, return_exceptions=True)
+            candidates = []
+            for res in results_lists:
+                if isinstance(res, Exception):
+                    continue
+                candidates.extend(res)
+            candidates.sort(key=lambda d: d.get("score", 0), reverse=True)
+            _add_from_docs(candidates)
+    except Exception as e:
+        logger.debug(f"DB spell text-search failed: {e}")
 
-    return suggestions
+    # 2️⃣ Prefix fallback - har collection se
+    if len(suggestions) < limit and len(q) >= 2:
+        try:
+            pref = re.escape(q[:3] if len(q) >= 3 else q[:2])
+            prefix_regex = re.compile(r'(\b|[\s.\-_])' + pref, re.IGNORECASE)
+            for col in cols:
+                if len(suggestions) >= limit:
+                    break
+                try:
+                    cur = col.find({"file_name": prefix_regex}, {"file_name": 1}).limit(20)
+                    docs = await cur.to_list(length=20)
+                    _add_from_docs(docs)
+                except:
+                    continue
+        except Exception as e:
+            logger.debug(f"DB spell prefix fallback failed: {e}")
 
+    # 3️⃣ Word-level regex - har word se har collection me
+    if len(suggestions) < limit:
+        words = [w for w in re.split(r'\s+', q) if len(w) >= 2]
+        for w in words[:3]:
+            if len(suggestions) >= limit:
+                break
+            try:
+                w_regex = re.compile(re.escape(w), re.IGNORECASE)
+                for col in cols:
+                    if len(suggestions) >= limit:
+                        break
+                    try:
+                        cur = col.find({"file_name": w_regex}, {"file_name": 1}).limit(15)
+                        docs = await cur.to_list(length=15)
+                        _add_from_docs(docs)
+                    except:
+                        continue
+            except Exception:
+                continue
 
-# ─────────────────────────────────────────────────────────
-# 🆕 RECENT FILES (कोई query ना हो तब dashboard पर दिखाने के लिए
-# — सबसे नई अपलोड की गई फाइलें, ताकि पेज खाली ना लगे)
-# ─────────────────────────────────────────────────────────
+    # 4️⃣ Recent fallback - har collection se recent, teeno se guarantee
+    if len(suggestions) < limit:
+        try:
+            for col in cols:
+                if len(suggestions) >= limit:
+                    break
+                try:
+                    cur = col.find({}, {"file_name": 1}).sort([('added_on', -1)]).limit(10)
+                    docs = await cur.to_list(length=10)
+                    _add_from_docs(docs)
+                except:
+                    continue
+        except Exception as e:
+            logger.debug(f"DB spell recent fallback failed: {e}")
+
+    return suggestions[:limit]
 async def get_recent_files(max_results, offset=0, collection_type="all"):
     proj = {"_id": 1, "file_name": 1, "file_size": 1, "file_type": 1, "file_ref": 1, "caption": 1, "thumb_url": 1, "added_on": 1}
 
@@ -499,10 +556,10 @@ async def delete_files(query, collection_type="all"):
         flt = {"file_name": regex}
 
         for col in cols:
-            # ✅ /delete (regex मैच वाला targeted delete) — DB से हटाने से पहले
-            # हर matching फाइल का बैकअप DELETE_CHANNEL में भेजा जाता है
+            # ✅ FIX: backup ke beech thoda gap taaki flood na ho
             async for doc in col.find(flt, {"_id": 1, "file_name": 1, "file_ref": 1}):
                 await _backup_before_delete(doc)
+                await asyncio.sleep(0.35)
             res = await col.delete_many(flt)
             deleted += res.deleted_count
         return deleted
@@ -618,15 +675,17 @@ async def delete_actor_profile(actor_id):
         return False
 
 async def delete_gallery_image_by_index(actor_id, index: int):
-    """गैलरी एरे में से स्पेसिफिक इंडेक्स वाली इमेज को पुल (हटा) करता है।"""
+    """गैलरी एरे में से स्पेसिफिक इंडेक्स वाली इमेज को हटाता है (index-safe, $pull nahi)."""
     try:
-        doc = await actors.find_one({"_id": ObjectId(actor_id)})
-        if not doc or "gallery" not in doc: return False
+        doc = await actors.find_one({"_id": ObjectId(actor_id)}, {"gallery": 1})
+        if not doc or "gallery" not in doc:
+            return False
         gallery = doc["gallery"]
-        if index < 0 or index >= len(gallery): return False
-        target_tg_id = gallery[index]
-        res = await actors.update_one({"_id": ObjectId(actor_id)}, {"$pull": {"gallery": target_tg_id}})
-        return bool(res.modified_count)
+        if index < 0 or index >= len(gallery):
+            return False
+        gallery.pop(index)
+        res = await actors.update_one({"_id": ObjectId(actor_id)}, {"$set": {"gallery": gallery}})
+        return bool(res.modified_count or res.matched_count)
     except Exception as e:
         logger.error(f"delete_gallery_image error: {e}")
         return False

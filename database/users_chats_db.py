@@ -1,9 +1,11 @@
 import logging
 import hashlib
 import random
+import copy
 from datetime import datetime, timedelta
 import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from info import (DATABASE_URL, DATABASE_NAME, FILE_CAPTION, 
                   SPELL_CHECK, PROTECT_CONTENT, AUTO_DELETE, TIME_ZONE)
 
@@ -28,17 +30,18 @@ class WebAuthDB:
         self.col = db["web_users"] 
         
     async def create_user(self, tg_id, email, password):
-        # कर्सर लोड बचाने के लिए स्ट्रिक्ट प्रोजेक्शन {"_id": 1} लागू
         if await self.col.find_one({"$or": [{"tg_id": tg_id}, {"email": email}]}, {"_id": 1}):
             return False, "Telegram ID or Email already registered!"
-            
         user_data = {
             "tg_id": tg_id,
             "email": email,
             "password": hash_password(password),
-            "joined_date": get_local_now() # सेंट्रलाइज्ड टाइमज़ोन सिंक
+            "joined_date": get_local_now()
         }
-        await self.col.insert_one(user_data)
+        try:
+            await self.col.insert_one(user_data)
+        except DuplicateKeyError:
+            return False, "Telegram ID or Email already registered!"
         return True, "Account Created Successfully!"
 
     async def verify_login(self, email, password):
@@ -151,19 +154,11 @@ class Database:
     async def total_users_count(self): 
         return await self.users.count_documents({})
     
-    # 'get_all_users' (पुराना ब्रॉडकास्ट कर्सर) पूरी तरह हटा दिया गया है ताकि रैम लीक न हो।
-    
-    async def delete_user(self, uid): 
-        await self.users.delete_many({"id": int(uid)})
-    
     async def ban_user(self, uid, rsn="No Reason"): 
         await self.users.update_one({"id": int(uid)}, {"$set": {"ban_status": {"is_banned": True, "ban_reason": rsn}}}, upsert=True)
         
     async def unban_user(self, uid): 
         await self.users.update_one({"id": int(uid)}, {"$set": {"ban_status": self.df_ban}})
-        
-    async def get_ban_status(self, uid): 
-        return (await self.users.find_one({"id": int(uid)}, {"ban_status": 1}) or {}).get("ban_status", self.df_ban)
 
     # ───────────────── GROUPS ─────────────────
     async def add_chat(self, gid, title): 
@@ -175,43 +170,28 @@ class Database:
     async def total_chat_count(self): 
         return await self.groups.count_documents({})
     
-    async def get_all_chats(self): 
-        return self.groups.find({}, {"id": 1})
-    
     async def disable_chat(self, gid, rsn="No Reason"): 
         await self.groups.update_one({"id": int(gid)}, {"$set": {"chat_status": {"is_disabled": True, "reason": rsn}}})
         
     async def re_enable_chat(self, gid): 
         await self.groups.update_one({"id": int(gid)}, {"$set": {"chat_status": self.df_chat}})
 
-    # ───────────────── SETTINGS & INLINE UI MGMT ─────────────────
+    # ───────────────── SETTINGS ─────────────────
     async def update_settings(self, gid, st): 
         await self.groups.update_one({"id": int(gid)}, {"$set": {"settings": st}}, upsert=True)
         
     async def get_settings(self, gid): 
-        return {**self.df_set, **((await self.groups.find_one({"id": int(gid)}, {"settings": 1})) or {}).get("settings", {})}
-    
-    async def get_warn(self, uid, cid): 
-        return await self.warns.find_one({"user_id": uid, "chat_id": cid}, {"count": 1}) or {"count": 0}
-        
-    async def set_warn(self, uid, cid, data): 
-        await self.warns.update_one({"user_id": uid, "chat_id": cid}, {"$set": data}, upsert=True)
-        
-    async def clear_warn(self, uid, cid): 
-        await self.warns.delete_one({"user_id": uid, "chat_id": cid})
-
-    async def get_all_notes(self, cid): 
-        return ((await self.groups.find_one({"id": int(cid)}, {"settings.notes": 1})) or {}).get("settings", {}).get("notes", {})
-        
-    async def save_note(self, cid, name, data): 
-        await self.groups.update_one({"id": int(cid)}, {"$set": {f"settings.notes.{name}": data}}, upsert=True)
-        
-    async def delete_note(self, cid, name): 
-        await self.groups.update_one({"id": int(cid)}, {"$unset": {f"settings.notes.{name}": ""}})
+        base = copy.deepcopy(self.df_set)
+        db_settings = ((await self.groups.find_one({"id": int(gid)}, {"settings": 1})) or {}).get("settings", {})
+        base.update(db_settings)
+        return base
 
     # ───────────────── PREMIUM INTEGRITY SYSTEM ─────────────────
     async def get_plan(self, uid): 
-        return {**self.df_prm, **((await self.premium.find_one({"id": int(uid)}, {"status": 1})) or {}).get("status", {})}
+        base = copy.deepcopy(self.df_prm)
+        db_status = ((await self.premium.find_one({"id": int(uid)}, {"status": 1})) or {}).get("status", {})
+        base.update(db_status)
+        return base
         
     async def update_plan(self, uid, data): 
         await self.premium.update_one({"id": int(uid)}, {"$set": {"status": data}}, upsert=True)
@@ -279,13 +259,14 @@ class Database:
             from utils import temp
             ram_users = set()
             
-            # 1. Active Live RAM Sessions से एक्टिव टोकन्स स्कैन करें
             if hasattr(temp, "USER_SESSIONS"):
                 import time
                 now = time.time()
                 for session_id, session_data in temp.USER_SESSIONS.items():
                     if session_data.get("expiry", 0) > now:
-                        ram_users.add(session_data.get("tg_id"))
+                        tid = session_data.get("tg_id")
+                        if tid:
+                            ram_users.add(tid)
 
             # 2. Database `web_users` कलेक्शन से पिछले 24 घंटे की लॉगिन हिस्ट्री चेक करें
             # ✅ BUG FIX: पहले यहाँ naive datetime.now() इस्तेमाल होता था, जबकि
@@ -297,7 +278,9 @@ class Database:
             today_start = get_local_now() - timedelta(days=1)
             db_cursor = self.db["web_users"].find({"last_login": {"$gte": today_start}}, {"tg_id": 1})
             async for user in db_cursor:
-                ram_users.add(user.get("tg_id"))
+                tid = user.get("tg_id")
+                if tid:
+                    ram_users.add(tid)
 
             return len(ram_users)
         except Exception as e:

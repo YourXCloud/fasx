@@ -85,21 +85,53 @@ async def get_http_session():
         _http_session = aiohttp.ClientSession()
     return _http_session
 
-async def get_spell_suggestions(query, limit=5):
+async def get_spell_suggestions(query, limit=6, collection_type="all"):
     """
-    ✅ FIX: पहले सिर्फ Google Suggest से suggestion मिलता था, जो कई बार ऐसा नाम
-    सुझा देता था जो bot के अपने catalog में मौजूद ही नहीं होता (user को फिर
-    "Still no results found" दिखता)। अब पहले खुद के DB (file_name text index)
-    से करीबी titles ढूँढे जाते हैं — ये हमेशा गारंटीड मौजूद कंटेंट होते हैं।
-    DB में कुछ भी करीबी न मिले तभी Google Suggest को fallback की तरह इस्तेमाल
-    किया जाता है।
+    ✅ UPGRADED: DB se hi suggestion aaye, jo file DB me actually hai.
+    - Pehle apne catalog (file_name text index + prefix fallback) se 5 tak nikalo — ye 100% existing titles hote hain.
+    - Agar DB se kam mile (jaise 2 hi mile), to Google Suggest ko bhi rakho, par uska har suggestion DB me check karke hi rakho.
+    - Google ka result agar DB me exist nahi karta, to discard — taaki "Still no results" wala case kabhi na aaye.
+    - Google Suggest https + 5s timeout ke saath safe hai.
     """
-    db_suggestions = await get_db_spell_suggestions(query, limit=limit)
-    if db_suggestions:
-        return db_suggestions
-    return await get_google_spell_suggestions(query, limit=limit)
+    # 1. DB suggestions - guaranteed existing from Primary/Cloud/Archive
+    db_sugs = await get_db_spell_suggestions(query, limit=limit, collection_type=collection_type)
+    seen = {s.lower().strip() for s in db_sugs}
+    orig_lower = query.lower().strip()
+    seen.add(orig_lower)
 
-async def get_google_spell_suggestions(query, limit=5):
+    # 2. Agar limit pura nahi hua, Google se bharo par DB me validate karke
+    if len(db_sugs) < limit:
+        try:
+            google_sugs = await get_google_spell_suggestions(query, limit=limit*2)
+        except:
+            google_sugs = []
+
+        for g in google_sugs:
+            gl = g.lower().strip()
+            if not gl or gl in seen or gl == orig_lower:
+                continue
+            # ✅ Validate: Google suggestion ka koi file DB me hai kya? bypass_count=True fast check
+            try:
+                files, _, _, _ = await get_search_results(g, 1, 0, collection_type=collection_type, bypass_count=True)
+                if files:
+                    db_sugs.append(g)
+                    seen.add(gl)
+            except Exception:
+                # check fail hua to bhi Google suggestion ko DB spell se double-check
+                try:
+                    # agar is Google term ke liye DB spell kuch de de, to matlab close match DB me hai
+                    alt = await get_db_spell_suggestions(g, limit=1, collection_type=collection_type)
+                    if alt:
+                        db_sugs.append(alt[0])
+                        seen.add(alt[0].lower().strip())
+                except:
+                    pass
+            if len(db_sugs) >= limit:
+                break
+
+    return db_sugs[:limit]
+
+async def get_google_spell_suggestions(query, limit=6):
     """
     Google Suggest से एक साथ कई suggestions लाता है (पहले सिर्फ पहला वाला लिया
     जाता था — data[1][0] — बाकी सारे suggestions जो API वैसे भी भेजता है, वो
@@ -110,11 +142,8 @@ async def get_google_spell_suggestions(query, limit=5):
     """
     try:
         session = await get_http_session()
-        # ✅ FIX: query को ठीक से URL-encode किया — पहले raw string (spaces/Hindi
-        # characters सहित) सीधे URL में डाला जा रहा था, जो multi-word/Hindi movie
-        # नामों पर request को तोड़ देता था।
         params = {"client": "firefox", "q": f"{query} movie"}
-        async with session.get("http://suggestqueries.google.com/complete/search", params=params) as resp:
+        async with session.get("https://suggestqueries.google.com/complete/search", params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
             # ✅ FIX: Google का यह endpoint Content-Type: application/json नहीं
             # भेजता (application/x-suggestions+json जैसा कुछ भेजता है) — aiohttp
             # का resp.json() डिफ़ॉल्ट में इसे ContentTypeError मानकर फेंक देता था,
@@ -144,8 +173,9 @@ async def get_google_spell_suggestions(query, limit=5):
 # 🎨 UI HELPER FUNCTION (Minimalist Layout Lock)
 # ─────────────────────────────────────────────
 def get_filter_ui(search, files, total, act_src, offset, chat_id, req_id, key, next_off, simple_mode=True, delay=300):
+    import html as _html
     list_items = [
-        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>[{get_size(f['file_size'])}] {f['file_name']}</a>"
+        f"📁 <a href='https://t.me/{temp.U_NAME}?start=file_{chat_id}_{f['_id']}'>[{get_size(f['file_size'])}] {_html.escape(str(f['file_name'])[:90])}</a>"
         for f in files
     ]
     files_text = "\n\n".join(list_items)
@@ -323,7 +353,7 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
             # ✅ FIX: पहले सिर्फ़ 1 suggestion मिलता था, अब Google Suggest से मिले
             # सारे (5 तक) suggestions एक-एक बटन के रूप में दिखाए जाते हैं ताकि
             # सही टाइटल चुनने का ज़्यादा मौका मिले।
-            suggestions = await get_spell_suggestions(search, limit=5)
+            suggestions = await get_spell_suggestions(search, limit=6, collection_type=collection_type)
             if suggestions:
                 try:
                     m = await msg.reply("🤔 Checking spelling...", quote=True)
@@ -362,13 +392,19 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
 
     key = f"{msg.chat.id}-{msg.id}"
     temp.FILES[key] = files
-    BUTTONS[key] = {"query": search, "counts": {collection_type: counts_out}}
+    # counts_out = {"primary":x,"cloud":y,"archive":z} for all, flat dict for fast reuse
+    BUTTONS[key] = {"query": search, "counts": counts_out}
 
     cap, markup = get_filter_ui(search, files, total, act_src, 0, msg.chat.id, msg.from_user.id, key, next_offset, is_simple_mode, delay=300)
 
     try:
         res = await msg.reply(cap, reply_markup=markup, disable_web_page_preview=True, quote=True)
-        asyncio.create_task(start_auto_delete_timer(client, res.chat.id, res.id, delay=300))
+        # fast in-memory timer + persistent DB backup for restart-proof
+        asyncio.create_task(start_auto_delete_timer(client, res.chat.id, res.id, delay=DELETE_TIME))
+        try:
+            await db.add_to_delete_queue(res.chat.id, res.id, DELETE_TIME)
+        except:
+            pass
     except Exception as e: 
         logger.error(f"Auto filter response error: {e}")
 
@@ -378,25 +414,50 @@ async def auto_filter(client, msg, collection_type="all", settings=None):
 @Client.on_callback_query(filters.regex(r"^close_"))
 async def close_callback(client, query):
     try:
+        parts = query.data.split("_")
+        if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) != query.from_user.id:
+            return await query.answer("❌ You cannot close this result!", show_alert=True)
+
         chat_id = query.message.chat.id
         current_msg_id = query.message.id
         
         task_key = f"{chat_id}_{current_msg_id}"
         if task_key in ACTIVE_DELETE_TASKS:
-            ACTIVE_DELETE_TASKS[task_key].cancel()
+            try:
+                ACTIVE_DELETE_TASKS[task_key].cancel()
+            except:
+                pass
             ACTIVE_DELETE_TASKS.pop(task_key, None)
 
-        # ✅ BUG FIX: अंधे की तरह -1/+1 डिलीट करने के बजाय सिर्फ बोट रिस्पांस और मूल यूज़र क्वेरी को ही डिलीट करें
         msg_ids_to_clean = [current_msg_id]
         if query.message.reply_to_message:
             msg_ids_to_clean.append(query.message.reply_to_message.id)
         elif getattr(query.message, "reply_to_message_id", None):
             msg_ids_to_clean.append(query.message.reply_to_message_id)
+
+        # PM_FILES cleanup (merged from commands.py)
+        if hasattr(temp, 'PM_FILES'):
+            target_key = None
+            for k, v in list(temp.PM_FILES.items()):
+                if v.get('file_msg') == current_msg_id or k == current_msg_id:
+                    if v.get('note_msg'):
+                        msg_ids_to_clean.append(v.get('note_msg'))
+                    target_key = k
+                    break
+            if target_key:
+                try:
+                    del temp.PM_FILES[target_key]
+                except:
+                    pass
         
         for mid in msg_ids_to_clean:
-            await db.remove_from_delete_queue(chat_id, mid)
+            if mid:
+                try:
+                    await db.remove_from_delete_queue(chat_id, mid)
+                except:
+                    pass
             
-        await client.delete_messages(chat_id, msg_ids_to_clean)
+        await client.delete_messages(chat_id, [m for m in msg_ids_to_clean if m])
     except Exception:
         try: await query.message.delete()
         except: pass
@@ -426,7 +487,7 @@ async def spell_check_handler(client, query):
             
         key = f"{query.message.chat.id}-{query.message.id}"
         temp.FILES[key] = files
-        BUTTONS[key] = {"query": suggestion, "counts": {"all": counts_out}}
+        BUTTONS[key] = {"query": suggestion, "counts": counts_out}
         
         settings = await get_settings(query.message.chat.id)
         is_simple_mode = settings.get("simple_mode", True)
@@ -435,6 +496,10 @@ async def spell_check_handler(client, query):
         await query.message.edit_text(cap, reply_markup=markup, disable_web_page_preview=True)
         
         asyncio.create_task(start_auto_delete_timer(client, query.message.chat.id, query.message.id, delay=300))
+        try:
+            await db.add_to_delete_queue(query.message.chat.id, query.message.id, DELETE_TIME)
+        except:
+            pass
             
     except Exception as e:
         logger.error(f"Spellcheck Callback Error: {e}")
@@ -464,15 +529,14 @@ async def pagination_handler(client, query):
     offset, coll_short = (int(data[3]), data[4]) if action == "nav" else (0, data[3])
     coll_type = SHORT_TO_SRC.get(coll_short, "all")
 
-    # ⚡ Isi tab ke liye count pehle se cached hai to dobara count_documents na chale (fast pagination)
-    cached = entry["counts"].get(coll_type)
+    # ✅ FIX: cached dict now flat {primary,cloud,archive} -> reuse for all
     counts_out = {}
     files, next_off, total, act_src = await get_search_results(
         search, MAX_BOT_RESULTS, offset, collection_type=coll_type,
-        cached_counts=cached, counts_out=counts_out
+        cached_counts=entry["counts"], counts_out=counts_out
     )
     if counts_out:
-        entry["counts"][coll_type] = counts_out
+        entry["counts"].update(counts_out)
     
     if not files:
         err = "❌ No more pages!" if action == "nav" else f"❌ No files in {coll_type.upper()}"

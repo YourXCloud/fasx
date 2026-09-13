@@ -9,10 +9,8 @@ from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppIn
 
 from Script import script
 # ✅ FIX: actors कलेक्शन को इम्पोर्ट किया गया ताकि हम डायरेक्टरी की गिनती कर सकें
-from database.ia_filterdb import db_count_documents, get_file_details, delete_files, actors
+from database.ia_filterdb import db_count_documents, get_file_details, delete_files, actors, get_directory_counts, get_post_stats as db_post_stats
 from database.users_chats_db import db
-from web.post_routes import posts_col
-
 from info import (
     IS_PREMIUM, URL, BIN_CHANNEL, ADMINS,
     LOG_CHANNEL, PICS, IS_STREAM, REACTIONS, PM_FILE_DELETE_TIME
@@ -40,25 +38,10 @@ def _build_mini_app_url(base_url: str) -> str:
 MINI_APP_URL = _build_mini_app_url(URL)
 
 
-# ─────────────────────────────────────────────
-# 📝 POST CMS STATS — category-wise counts (reused by /stats & stats callback)
-# ─────────────────────────────────────────────
 async def _get_post_stats():
-    try:
-        raw_post_counts = {}
-        pipeline = [{"$group": {"_id": {"$ifNull": ["$category", "Uncategorized"]}, "count": {"$sum": 1}}}]
-        async for doc in posts_col.aggregate(pipeline):
-            raw_post_counts[doc["_id"]] = doc["count"]
-    except Exception as e:
-        raw_post_counts = {}
-        logger.error(f"Post Stats Error: {e}")
-
-    post_movies = raw_post_counts.get("Movies", 0)
-    post_webseries = raw_post_counts.get("Web Series", 0)
-    post_appvid = raw_post_counts.get("App Video", 0)
-    post_porn = raw_post_counts.get("Porn", 0)
-    post_total = sum(raw_post_counts.values())
-    return post_total, post_movies, post_webseries, post_appvid, post_porn
+    # centralized helper reuse
+    total, movies, webseries, appvid, porn, _ = await db_post_stats()
+    return total, movies, webseries, appvid, porn
 
 
 # ─────────────────────────────────────────────
@@ -111,16 +94,21 @@ async def start(client, message):
 
                 settings = await get_settings(grp_id)
                 cap_template = settings.get('caption', script.FILE_CAPTION)
-                caption = cap_template.format(
-                    file_name=str(file.get('file_name', 'File')),
-                    file_size=get_size(file.get('file_size', 0))
-                )
+                try:
+                    caption = cap_template.format(
+                        file_name=str(file.get('file_name', 'File')),
+                        file_size=get_size(file.get('file_size', 0))
+                    )
+                except Exception:
+                    caption = f"<b>{file.get('file_name', 'File')}</b>"
 
                 btn = [[InlineKeyboardButton('❌ Close', callback_data=f'close_{message.from_user.id}')]]
                 if IS_STREAM:
                     btn.insert(0, [InlineKeyboardButton("▶️ Watch / Download", callback_data=f"stream#{file_id}")])
 
-                target_media = file.get('file_ref') if file.get('file_ref') else file_id
+                target_media = file.get('file_ref')
+                if not target_media:
+                    return await message.reply("❌ File reference missing, please re-index!")
 
                 msg = await client.send_cached_media(
                     message.chat.id,
@@ -187,12 +175,12 @@ async def stats(_, message):
         try: premium = await db.premium.count_documents({"status.premium": True})
         except: premium = 0
 
-        # 🗂️ Universal Directory Fetch
+        # 🗂️ Universal Directory Fetch - explicit counts
         try:
             tot_dir = await actors.count_documents({})
             app_dir = await actors.count_documents({"category": "app"})
             web_dir = await actors.count_documents({"category": "website"})
-            act_dir = tot_dir - app_dir - web_dir
+            act_dir = await actors.count_documents({"category": "actor"})
         except Exception as e:
             tot_dir = app_dir = web_dir = act_dir = 0
             logger.error(f"Directory Stats Error: {e}")
@@ -278,9 +266,10 @@ async def link_generator(client, message):
     if not media:
         return await message.reply("❌ **No streamable media found in the replied message.**", quote=True)
 
-    msg = await message.reply("⏳ **Injecting into Stream Stream Tunnel...**", quote=True)
+    msg = await message.reply("⏳ **Injecting into Stream Tunnel...**", quote=True)
     try:
         copied = await message.reply_to_message.copy(BIN_CHANNEL)
+        await db.add_to_delete_queue(BIN_CHANNEL, copied.id, 3600)
         btn = [
             [
                 InlineKeyboardButton("🍿 WATCH ONLINE", url=f"{URL}watch/{copied.id}"),
@@ -344,7 +333,7 @@ async def ui_cb(client, query):
                 tot_dir = await actors.count_documents({})
                 app_dir = await actors.count_documents({"category": "app"})
                 web_dir = await actors.count_documents({"category": "website"})
-                act_dir = tot_dir - app_dir - web_dir
+                act_dir = await actors.count_documents({"category": "actor"})
             except:
                 tot_dir = app_dir = web_dir = act_dir = 0
 
@@ -417,9 +406,11 @@ async def stream_cb(client, query):
         if not file:
             return await query.answer("❌ File removed or structural ID broken!", show_alert=True)
             
-        target_media = file.get('file_ref') if file.get('file_ref') else file_id
-
+        target_media = file.get('file_ref')
+        if not target_media:
+            return await query.answer("❌ File reference missing!", show_alert=True)
         msg = await client.send_cached_media(BIN_CHANNEL, target_media)
+        await db.add_to_delete_queue(BIN_CHANNEL, msg.id, 3600)
         btn = [
             [
                 InlineKeyboardButton("🎬 Stream Online", url=f"{URL}watch/{msg.id}"),
@@ -432,38 +423,4 @@ async def stream_cb(client, query):
         await query.answer(f"Error: {e}", show_alert=True)
 
 
-@Client.on_callback_query(filters.regex(r"^close_"))
-async def close_cb(c, q):
-    try:
-        parts = q.data.split("_")
-        if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) != q.from_user.id:
-            return await q.answer("❌ You cannot close this result!", show_alert=True)
-
-        chat_id = q.message.chat.id
-        current_msg_id = q.message.id
-
-        msg_ids_to_clean = [current_msg_id]
-        if q.message.reply_to_message:
-            msg_ids_to_clean.append(q.message.reply_to_message.id)
-        elif getattr(q.message, "reply_to_message_id", None):
-            msg_ids_to_clean.append(q.message.reply_to_message_id)
-
-        if hasattr(temp, 'PM_FILES'):
-            target_key = None
-            for k, v in temp.PM_FILES.items():
-                if v.get('file_msg') == current_msg_id or k == current_msg_id:
-                    if v.get('note_msg'):
-                        msg_ids_to_clean.append(v.get('note_msg'))
-                    target_key = k
-                    break
-            if target_key:
-                del temp.PM_FILES[target_key]
-
-        for mid in msg_ids_to_clean:
-            if mid: await db.remove_from_delete_queue(chat_id, mid)
-
-        await c.delete_messages(chat_id, [m for m in msg_ids_to_clean if m])
-
-    except Exception as e:
-        try: await q.message.delete()
-        except: pass
+# close handler moved to filter.py (merged)

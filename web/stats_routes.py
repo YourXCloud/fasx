@@ -1,12 +1,9 @@
 from aiohttp import web
 from web.web_assets import build_page, get_auth
 # ✅ FIX: actors कलेक्शन को इम्पोर्ट किया गया ताकि हम प्रोफाइल्स गिन सकें
-from database.ia_filterdb import db_count_documents, actors
+from database.ia_filterdb import db_count_documents, actors, get_directory_counts, get_post_stats
 from database.users_chats_db import db as user_db
 from info import PORT
-# ✅ NEW: post_routes.py में पहले से मौजूद posts_col को ही reuse किया,
-# दोबारा motor_db.db["Posts"] से नया collection object नहीं बनाया
-from web.post_routes import posts_col
 
 stats_routes = web.RouteTableDef()
 
@@ -134,33 +131,9 @@ async def stats(req):
     try: premium_users = await user_db.get_premium_users_count()
     except: premium_users = 0
 
-    # ─── 🗂️ UNIVERSAL DIRECTORY COUNTS ───
-    try:
-        tot_dir = await actors.count_documents({})
-        app_dir = await actors.count_documents({"category": "app"})
-        web_dir = await actors.count_documents({"category": "website"})
-        act_dir = tot_dir - app_dir - web_dir
-    except:
-        tot_dir = app_dir = web_dir = act_dir = 0
+    tot_dir, act_dir, app_dir, web_dir = await get_directory_counts()
 
-    # ─── 📝 POST CREATION STATS (Movies / Web Series / App Video / Porn) ───
-    # post_routes.py के "category" फील्ड ("Movies", "Web Series", "App Video", "Porn")
-    # पर group-by करके गिनती निकाली जाती है, पूरा array in-memory लोड करने की बजाय
-    # MongoDB aggregation से ही count हो जाता है (हल्का और तेज़)
-    try:
-        raw_post_counts = {}
-        pipeline = [{"$group": {"_id": {"$ifNull": ["$category", "Uncategorized"]}, "count": {"$sum": 1}}}]
-        async for doc in posts_col.aggregate(pipeline):
-            raw_post_counts[doc["_id"]] = doc["count"]
-    except:
-        raw_post_counts = {}
-
-    post_movies = raw_post_counts.get("Movies", 0)
-    post_webseries = raw_post_counts.get("Web Series", 0)
-    post_appvid = raw_post_counts.get("App Video", 0)
-    post_porn = raw_post_counts.get("Porn", 0)
-    post_total = sum(raw_post_counts.values())
-    # कोई पुराना/कस्टम category value जो ऊपर के 4 fixed buckets में फिट नहीं होता
+    post_total, post_movies, post_webseries, post_appvid, post_porn, raw_post_counts = await get_post_stats()
     post_other = post_total - post_movies - post_webseries - post_appvid - post_porn
 
     p_tot, c_tot, a_tot = s.get('primary', 0), s.get('cloud', 0), s.get('archive', 0)

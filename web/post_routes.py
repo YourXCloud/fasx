@@ -7,16 +7,12 @@ from bson.objectid import ObjectId
 from utils import temp
 from info import THUMBNAIL_STORAGE_CHANNEL
 from database.users_chats_db import db as motor_db
-from web.web_assets import build_page, get_auth, require_active_plan
+from web.web_assets import build_page, get_auth, require_active_plan, fast_json
 
 post_routes = web.RouteTableDef()
 posts_col = motor_db.db["Posts"]
 
-# ─────────────────────────────────────────────────────────
-# ⚡ ULTRA-FAST ORJSON DUMP FUNCTION
-# ─────────────────────────────────────────────────────────
-def fast_json(data):
-    return orjson.dumps(data).decode('utf-8')
+# fast_json from web_assets
 
 # ─────────────────────────────────────────────────────────
 # 🛠️ ImgBB Auto-Converter Helper Functions
@@ -26,7 +22,7 @@ async def fetch_direct_ibb_url(session, url):
     if not url: return None
     if "ibb.co" in url and "i.ibb.co" not in url:
         try:
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status == 200:
                     html_content = await resp.text()
                     match = re.search(r'<meta property="og:image" content="([^"]+)"', html_content)
@@ -380,7 +376,7 @@ async def process_multipart_post(req, action="publish"):
 
     raw_urls = []
     if screenshot_urls_raw:
-        raw_urls = [u.strip() for u in screenshot_urls_raw.split('\n') if u.strip()]
+        raw_urls = [u.strip() for u in screenshot_urls_raw.splitlines() if u.strip()]
         tasks.append(convert_all_ibb_links(raw_urls))
         
     if tasks:
@@ -393,8 +389,12 @@ async def process_multipart_post(req, action="publish"):
         elif len(tasks) == 1 and not screenshot_urls_raw:
              if all_results[0]: post_data["cover_image"] = all_results[0][0]
 
-    for vid, vheading, vname in zip(temp_v_ids, temp_v_headings, temp_v_names):
-        if vid and vname: 
+    max_len = max(len(temp_v_ids), len(temp_v_headings), len(temp_v_names))
+    for i in range(max_len):
+        vid = temp_v_ids[i] if i < len(temp_v_ids) else ""
+        vheading = temp_v_headings[i] if i < len(temp_v_headings) else "Download Links"
+        vname = temp_v_names[i] if i < len(temp_v_names) else ""
+        if vid and vname:
             post_data["videos"].append({"file_id": vid, "heading": vheading or "Download Links", "custom_name": vname})
         
     return post_data, post_id
